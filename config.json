@@ -1,0 +1,21 @@
+{
+  "height": 220,
+  "opacity": 1.0,
+  "wander": true,
+  "glitch": true,
+  "particles": true,
+  "click_through": false,
+  "mirror": false,
+  "speech": true,
+  "reactions": true,
+  "sounds": true,
+  "sleepy_hours": [
+    0,
+    6
+  ],
+  "exp": 2,
+  "level": 12,
+  "image_index": 0,
+  "x": null,
+  "y": null
+}

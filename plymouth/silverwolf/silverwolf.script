@@ -1,0 +1,258 @@
+// SW://BOOT - Silver Wolf Plymouth theme.
+// Generated into plymouth/silverwolf/ by tools/make_plymouth.py (edit this .in file, not the copy).
+
+W = Window.GetWidth();
+H = Window.GetHeight();
+S = H / 1600;
+if (S <= 0) S = 1;
+
+LOG_COUNT = 16;
+SLOG_COUNT = 6;
+mode = Plymouth.GetMode();
+shutdown = 0;
+if (mode == "shutdown" || mode == "reboot") shutdown = 1;
+
+Window.SetBackgroundTopColor(0.055, 0.04, 0.10);
+Window.SetBackgroundBottomColor(0.13, 0.05, 0.22);
+
+fun scaled(name) {
+  img = Image(name);
+  return img.Scale(Math.Int(img.GetWidth() * global.S), Math.Int(img.GetHeight() * global.S));
+}
+
+// ---------------------------------------------------------------- backdrop
+glow = Sprite(Image("glow.png").Scale(W, Math.Int(H * 0.45)));
+glow.SetPosition(0, H - Math.Int(H * 0.45), 1);
+
+scan = Sprite(Image("scanlines.png").Tile(W, H));
+scan.SetPosition(0, 0, 100);
+
+// ---------------------------------------------------------------- chibi
+chibi_src = Image("chibi.png");
+CH = Math.Int(H * 0.34);
+CW = Math.Int(chibi_src.GetWidth() * CH / chibi_src.GetHeight());
+CX = Math.Int(W / 2 - CW / 2);
+CY = Math.Int(H * 0.38 - CH / 2);
+
+chibi = Sprite(chibi_src.Scale(CW, CH));
+chibi.SetPosition(CX, CY, 10);
+ghost_c = Sprite(Image("chibi_cyan.png").Scale(CW, CH));
+ghost_c.SetPosition(CX, CY, 9);
+ghost_c.SetOpacity(0);
+ghost_p = Sprite(Image("chibi_pink.png").Scale(CW, CH));
+ghost_p.SetPosition(CX, CY, 9);
+ghost_p.SetOpacity(0);
+
+// glitch slices: thin coloured bars that flash across her during a glitch
+i = 0;
+while (i < 4) {
+  if (i % 2 == 0) bar_src[i] = Image("glitch_cyan.png");
+  else bar_src[i] = Image("glitch_pink.png");
+  bars[i] = Sprite();
+  bars[i].SetZ(11);
+  bars[i].SetOpacity(0);
+  i = i + 1;
+}
+
+// ---------------------------------------------------------------- titles
+if (shutdown) {
+  title_img = scaled("title_shutdown.png");
+  sub_img = scaled("sub_shutdown.png");
+} else {
+  title_img = scaled("title_boot.png");
+  sub_img = scaled("sub_boot.png");
+}
+TY = CY + CH + Math.Int(36 * S);
+title = Sprite(title_img);
+title.SetPosition(Math.Int(W / 2 - title_img.GetWidth() / 2), TY, 20);
+
+SY = TY + title_img.GetHeight() + Math.Int(4 * S);
+SX = Math.Int(W / 2 - sub_img.GetWidth() / 2);
+sub = Sprite(sub_img);
+sub.SetPosition(SX, SY, 20);
+
+cursor = Sprite(scaled("cursor.png"));
+cursor.SetPosition(SX + sub_img.GetWidth() - Math.Int(10 * S), SY, 20);
+
+// ---------------------------------------------------------------- progress bar
+BW = Math.Int(560 * S);
+BH = Math.Int(14 * S);
+if (BH < 6) BH = 6;
+BX = Math.Int(W / 2 - BW / 2);
+BY = SY + sub_img.GetHeight() + Math.Int(22 * S);
+bar_bg = Sprite(Image("bar_bg.png").Scale(BW, BH));
+bar_bg.SetPosition(BX, BY, 20);
+bar_fg_src = Image("bar_fg.png");
+bar_hi_src = Image("bar_hi.png");
+bar_fg = Sprite();
+bar_fg.SetPosition(BX + 2, BY + 2, 21);
+bar_tip = Sprite(bar_hi_src.Scale(Math.Int(6 * S) + 1, BH - 4));
+bar_tip.SetPosition(BX + 2, BY + 2, 22);
+progress = 0;
+shown_w = -1;
+
+fun boot_progress(duration, prog) {
+  global.progress = prog;
+}
+Plymouth.SetBootProgressFunction(boot_progress);
+
+// ---------------------------------------------------------------- hacker log
+VIS = 9;
+LX = Math.Int(48 * S);
+i = 0;
+while (i < VIS) {
+  log_spr[i] = Sprite();
+  log_spr[i].SetZ(20);
+  i = i + 1;
+}
+if (shutdown) {
+  NLOG = SLOG_COUNT;
+  i = 0;
+  while (i < NLOG) { log_img[i] = scaled("slog" + i + ".png"); i = i + 1; }
+} else {
+  NLOG = LOG_COUNT;
+  i = 0;
+  while (i < NLOG) { log_img[i] = scaled("log" + i + ".png"); i = i + 1; }
+}
+LH = log_img[0].GetHeight();
+LY = H - Math.Int(48 * S) - VIS * LH;
+lines = 0;
+
+fun push_log() {
+  global.lines = global.lines + 1;
+  n = global.lines;
+  first = 0;
+  if (n > global.VIS) first = n - global.VIS;
+  j = 0;
+  while (j < global.VIS) {
+    k = first + j;
+    if (k < n) {
+      global.log_spr[j].SetImage(global.log_img[k % global.NLOG]);
+      global.log_spr[j].SetPosition(global.LX, global.LY + j * global.LH, 20);
+      // older lines fade out towards the top
+      global.log_spr[j].SetOpacity(0.35 + 0.65 * (j + 1 + global.VIS - Math.Min(n, global.VIS)) / global.VIS);
+    }
+    j = j + 1;
+  }
+}
+
+// ---------------------------------------------------------------- password / messages
+MAXB = 32;
+prompt_img = scaled("prompt.png");
+prompt = Sprite(prompt_img);
+PY = BY + BH + Math.Int(30 * S);
+prompt.SetPosition(Math.Int(W / 2 - prompt_img.GetWidth() / 2), PY, 30);
+prompt.SetOpacity(0);
+bullet_img = scaled("bullet.png");
+BUW = Math.Int(bullet_img.GetWidth() * 0.6);
+i = 0;
+while (i < MAXB) {
+  bullet[i] = Sprite(bullet_img);
+  bullet[i].SetOpacity(0);
+  bullet[i].SetZ(30);
+  i = i + 1;
+}
+
+fun display_password(prompt_text, bullets) {
+  global.prompt.SetOpacity(1);
+  nb = Math.Min(bullets, global.MAXB);
+  x0 = Math.Int(global.W / 2 - nb * global.BUW / 2);
+  j = 0;
+  while (j < global.MAXB) {
+    if (j < nb) {
+      global.bullet[j].SetPosition(x0 + j * global.BUW, global.PY + global.prompt_img.GetHeight(), 30);
+      global.bullet[j].SetOpacity(1);
+    } else {
+      global.bullet[j].SetOpacity(0);
+    }
+    j = j + 1;
+  }
+}
+Plymouth.SetDisplayPasswordFunction(display_password);
+
+fun display_normal() {
+  global.prompt.SetOpacity(0);
+  j = 0;
+  while (j < global.MAXB) { global.bullet[j].SetOpacity(0); j = j + 1; }
+}
+Plymouth.SetDisplayNormalFunction(display_normal);
+
+msg = Sprite();
+msg.SetZ(30);
+fun show_message(text) {
+  img = Image.Text(text, 0.91, 0.90, 1.0, 1.0, "Sans 14");
+  global.msg.SetImage(img);
+  global.msg.SetPosition(Math.Int(global.W / 2 - img.GetWidth() / 2), global.H - Math.Int(40 * global.S) - img.GetHeight(), 30);
+  global.msg.SetOpacity(1);
+}
+Plymouth.SetMessageFunction(show_message);
+
+// ---------------------------------------------------------------- animation loop (~50 fps)
+t = 0;
+next_glitch = 40;
+glitch_end = 0;
+next_line = 8;
+
+fun refresh() {
+  global.t = global.t + 1;
+  t = global.t;
+
+  // gentle float
+  fy = global.CY + Math.Int(Math.Sin(t * 0.05) * 10 * global.S);
+  chibi_x = global.CX;
+
+  // glitch bursts
+  if (t >= global.next_glitch) {
+    global.glitch_end = t + 6 + Math.Int(Math.Random() * 8);
+    global.next_glitch = t + 60 + Math.Int(Math.Random() * 140);
+  }
+  if (t < global.glitch_end) {
+    dx = Math.Int((Math.Random() - 0.5) * 26 * global.S);
+    chibi_x = global.CX + dx;
+    off = Math.Int(8 * global.S) + 2;
+    global.ghost_c.SetPosition(chibi_x - off, fy, 9);
+    global.ghost_p.SetPosition(chibi_x + off, fy, 9);
+    global.ghost_c.SetOpacity(0.55);
+    global.ghost_p.SetOpacity(0.55);
+    j = 0;
+    while (j < 4) {
+      bw = Math.Int(global.CW * (0.3 + Math.Random() * 0.9));
+      bh = Math.Int((1 + Math.Random() * 4) * global.S) + 1;
+      global.bars[j].SetImage(global.bar_src[j].Scale(bw, bh));
+      global.bars[j].SetPosition(global.CX + Math.Int((Math.Random() - 0.3) * global.CW * 0.6), fy + Math.Int(Math.Random() * global.CH), 11);
+      global.bars[j].SetOpacity(0.6);
+      j = j + 1;
+    }
+    global.title.SetX(Math.Int(global.W / 2 - global.title_img.GetWidth() / 2) - dx / 2);
+  } else {
+    global.ghost_c.SetOpacity(0);
+    global.ghost_p.SetOpacity(0);
+    j = 0;
+    while (j < 4) { global.bars[j].SetOpacity(0); j = j + 1; }
+    global.title.SetX(Math.Int(global.W / 2 - global.title_img.GetWidth() / 2));
+  }
+  global.chibi.SetPosition(chibi_x, fy, 10);
+
+  // blinking cursor
+  if (Math.Int(t / 20) % 2 == 0) global.cursor.SetOpacity(1);
+  else global.cursor.SetOpacity(0);
+
+  // scrolling log
+  if (t >= global.next_line) {
+    push_log();
+    global.next_line = t + 10 + Math.Int(Math.Random() * 18);
+  }
+
+  // progress: real value, but never look stuck (creeps to 90% over ~20 s)
+  faux = Math.Min(t / 1100, 0.9);
+  p = Math.Max(global.progress, faux);
+  if (p > 1) p = 1;
+  w = Math.Int((global.BW - 4) * p);
+  if (w < 1) w = 1;
+  if (w != global.shown_w) {
+    global.shown_w = w;
+    global.bar_fg.SetImage(global.bar_fg_src.Scale(w, global.BH - 4));
+    global.bar_tip.SetX(global.BX + 2 + w - Math.Int(6 * global.S));
+  }
+}
+Plymouth.SetRefreshFunction(refresh);

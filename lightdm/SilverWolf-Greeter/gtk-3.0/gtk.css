@@ -1,0 +1,108 @@
+/* SilverWolf-Greeter: GTK3 theme for lightdm-gtk-greeter.
+   Adwaita-dark underneath, Silver Wolf violet/cyan/pink on top. */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");
+
+@define-color sw_dark   #0e0a1a;
+@define-color sw_panel  #140f24;
+@define-color sw_field  #1a1230;
+@define-color sw_violet #b48cff;
+@define-color sw_cyan   #5ef2ff;
+@define-color sw_pink   #ff6bd6;
+@define-color sw_text   #e8e6ff;
+@define-color sw_dim    #8b86a8;
+
+* { outline-color: alpha(@sw_cyan, 0.6); }
+
+/* ---------- top panel ---------- */
+#panel_window {
+  background-color: alpha(@sw_dark, 0.82);
+  border-bottom: 1px solid alpha(@sw_violet, 0.7);
+  color: @sw_text;
+}
+#panel_window menubar,
+#panel_window menubar > menuitem { background: transparent; color: @sw_text; box-shadow: none; }
+#panel_window menubar > menuitem:hover { background-color: alpha(@sw_violet, 0.25); color: @sw_cyan; }
+#panel_window label { color: @sw_text; font-family: "VT323"; font-size: 15pt; }
+
+menu, .menu, .context-menu {
+  background-color: @sw_panel;
+  border: 1px solid @sw_violet;
+  color: @sw_text;
+}
+menu menuitem:hover { background-color: alpha(@sw_violet, 0.3); color: @sw_cyan; }
+menu menuitem check:checked, menu menuitem radio:checked { color: @sw_pink; }
+
+/* ---------- login box ---------- */
+#login_window, #power_window {
+  background-color: alpha(@sw_dark, 0.86);
+  background-image: linear-gradient(to bottom, alpha(@sw_violet, 0.10), transparent 40%);
+  border: 2px solid @sw_violet;
+  border-radius: 12px;
+  box-shadow: 0 0 22px alpha(@sw_violet, 0.45), inset 0 0 0 1px alpha(@sw_cyan, 0.15);
+  padding: 6px;
+  color: @sw_text;
+}
+#login_window frame, #login_window frame > border,
+#power_window frame, #power_window frame > border { background: transparent; border: none; box-shadow: none; }
+#login_window label, #power_window label { color: @sw_text; }
+
+#user_image {
+  border: 2px solid @sw_pink;
+  border-radius: 10px;
+  padding: 2px;
+  background-color: @sw_field;
+}
+
+entry {
+  background-color: @sw_field;
+  background-image: none;
+  color: @sw_text;
+  caret-color: @sw_pink;
+  border: 1px solid alpha(@sw_violet, 0.55);
+  border-radius: 6px;
+  font-family: "Source Code Pro";
+  box-shadow: none;
+}
+entry:focus {
+  border-color: @sw_cyan;
+  box-shadow: 0 0 6px alpha(@sw_cyan, 0.55);
+}
+entry selection { background-color: @sw_violet; color: @sw_dark; }
+entry image { color: @sw_dim; }
+
+combobox button, #login_window button:not(#login_button) {
+  background-image: none;
+  background-color: @sw_field;
+  border: 1px solid alpha(@sw_violet, 0.55);
+  color: @sw_text;
+  box-shadow: none;
+  text-shadow: none;
+}
+combobox button:hover, #login_window button:not(#login_button):hover {
+  border-color: @sw_cyan;
+  color: @sw_cyan;
+}
+
+#login_button, #power_ok_button {
+  background-image: none;
+  background-color: @sw_violet;
+  border: none;
+  border-radius: 6px;
+  box-shadow: 0 0 10px alpha(@sw_violet, 0.5);
+  text-shadow: none;
+  font-weight: bold;
+}
+#login_button label, #power_ok_button label { color: @sw_dark; }
+#login_button:hover, #power_ok_button:hover {
+  background-color: @sw_pink;
+  box-shadow: 0 0 14px alpha(@sw_pink, 0.6);
+}
+
+#message_label, .error, infobar label { color: @sw_pink; }
+infobar, infobar > revealer > box { background-color: transparent; border: none; }
+
+tooltip, tooltip.background {
+  background-color: @sw_panel;
+  border: 1px solid @sw_violet;
+  color: @sw_text;
+}

@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Silver Wolf
+Description=SW://BOOT glitch splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/silverwolf
+ScriptFile=/usr/share/plymouth/themes/silverwolf/silverwolf.script
