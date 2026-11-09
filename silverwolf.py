@@ -67,6 +67,11 @@ FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
 PHASE_T = {"cart": 0.9, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
            "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
+# LV.999 chibi look: her official chat stickers in forms/sw999_chibi/ (01-04, git-ignored).
+#   01 gum + handheld (default)   02 pointing (booped)
+#   03 star shades, arms crossed (godmode)   04 giant pixel-shades bubble (godmode trigger)
+CHIBI_META = dict(back=(0.5, 0.62), gauntlet=(0.48, 0.80), hand=(0.48, 0.80))
+STK_IDLE, STK_POINT, STK_GOD, STK_BUBBLE = 0, 1, 2, 3
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
@@ -76,7 +81,7 @@ FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0
 DEFAULTS = dict(height=300, opacity=1.0, wander=False, glitch=True,
                 particles=True, click_through=False, mirror=False,
                 speech=True, reactions=True, sounds=True, sleepy_hours=[0, 6],
-                exp=0, level=1, sw999_seconds=30, sw999_auto=True, sw999_play=False,
+                exp=0, level=1, sw999_seconds=30, sw999_auto=True, sw999_play=False, sw999_style="chibi",
                 image_index=0, x=None, y=None)
 
 # ------------------------------------------------------------------ lines
@@ -358,6 +363,11 @@ class Companion(QWidget):
         self.next_lv_line = 0.0
         self.wfx = []
         self.lv_boops = []
+        self.stickers_src, self.stickers = [], []
+        self.sticker_cur = self.sticker_prev = STK_IDLE
+        self.sticker_t = -9.0
+        self.sticker_until = 0.0
+        self.next_point = 0.0
 
         self.drag_off = None
         self.drag_moved = False
@@ -473,10 +483,15 @@ class Companion(QWidget):
         self.form_bare = self.form_bare_scaled = self.form_visor = self.form_visor_scaled = None
         self.form_meta = {}
         self.idle_src, self.idle_frames = [], []
+        self.stickers_src, self.stickers = [], []
         self.form_cache.clear()
         self.block_cache.clear()
         if not FORM_DIR.is_dir():
             return
+        chibi = FORM_DIR / "sw999_chibi"
+        if chibi.is_dir():
+            files = sorted(p for p in chibi.iterdir() if p.suffix.lower() in STATIC_EXTS | {".webp"})
+            self.stickers_src = [px for px in (QPixmap(str(p)) for p in files) if not px.isNull()]
         for f in sorted(FORM_DIR.iterdir()):
             ext = f.suffix.lower()
             if f.stem.lower() != "sw999" or ext not in STATIC_EXTS | ANIM_EXTS:
@@ -512,6 +527,11 @@ class Companion(QWidget):
             self.idle_meta, self.idle_src = {}, []
 
     def scale_form_image(self):
+        self.stickers = []
+        if self.stickers_src:  # chibi stickers: a little bigger than the everyday chibi
+            sz = round(self.img_h * 1.05)
+            self.stickers = [px.scaled(sz, sz, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation) for px in self.stickers_src]
         if not (self.form_movie or self.form_static):
             return
         sw, sh = max(1, self.form_src_size.width()), max(1, self.form_src_size.height())
@@ -1041,7 +1061,7 @@ class Companion(QWidget):
 
     def godmode(self):
         """Her ultimate: only from her LV.999 idle."""
-        if self.form_phase == "lv999" and self.has_form_art() and self.form_bare_scaled is not None:
+        if self.form_phase == "lv999" and self.can_godmode():
             self.lv_pause = self.t
             self.set_phase("visor")
 
@@ -1059,6 +1079,7 @@ class Companion(QWidget):
         elif ph == "insert":
             self.play("cart")
         elif ph == "settle":
+            self.next_point = self.t + 6.0
             self.lv_until = self.t + PHASE_T["settle"] + self.lv999_seconds()
             self.auto_god = self.t + PHASE_T["settle"] + 4.0  # one ultimate early on
             self.anim_t0 = self.t
@@ -1113,10 +1134,30 @@ class Companion(QWidget):
         return ph in ("insert", "settle", "lv999", "visor", "active", "godoff", "unsettle", "eject") \
             or (ph == "derez" and k >= 0.5) or (ph == "rerez" and k < 0.5)
 
+    def update_sticker(self, ph, k):
+        """Pick the chibi sticker for the moment, and remember when it changed."""
+        if ph == "visor":
+            want = STK_BUBBLE if k < 0.45 else STK_GOD
+        elif ph == "active":
+            want = STK_GOD
+        elif ph == "godoff":
+            want = STK_GOD if k < 0.3 else STK_IDLE
+        elif ph == "lv999":
+            if self.t >= self.next_point:  # now and then she points at you
+                self.sticker_until = self.t + 2.5
+                self.next_point = self.t + random.uniform(8, 14)
+            want = STK_POINT if self.t < self.sticker_until else STK_IDLE
+        else:
+            want = STK_IDLE
+        if want != self.sticker_cur:
+            self.sticker_prev, self.sticker_cur, self.sticker_t = self.sticker_cur, want, self.t
+
     def update_form(self, dt):
         ph, k = self.form_progress()
         if not ph:
             return
+        if self.chibi_mode():
+            self.update_sticker(ph, k)
         if ph == "digital" or (ph == "active" and random.random() < dt * 3):
             for _ in range(int(dt * 30) + (random.random() < (dt * 30) % 1)):
                 self.spawn_cube()
@@ -1129,6 +1170,12 @@ class Companion(QWidget):
         if ph == "visor" and k >= 0.45 and not self.form_flag:  # shades lock on
             self.form_flag = True
             self.play("godmode")
+            if self.chibi_mode():  # the pixel-shades bubble pops
+                self.play("pop")
+                cx, cy = self.width() / 2, PAD + self.img_h * 0.3
+                for _ in range(22):
+                    self.spawn_particle(burst=True, at=(cx, cy), colors=[PINK, QColor("#ffb3ec"), CYAN, QColor("#ffffff")])
+                self.floaters.append(dict(text="POP!", x=cx - 18, y=cy - 20, vy=-40, life=0.8, max=0.8, color=PINK, size=15))
             for _ in range(24):
                 self.spawn_cube(burst=True)
         if ph == "lv999":
@@ -1269,8 +1316,8 @@ class Companion(QWidget):
         return QPointF(self.x() + wx, self.y() + wy)
 
     def hand_global(self):
-        if self.has_form_art() and "hand" in self.form_meta:
-            return self.local_to_global(*self.form_point(*self.form_meta["hand"]))
+        if self.has_form_art() and "hand" in self.fmeta:
+            return self.local_to_global(*self.form_point(*self.fmeta["hand"]))
         return self.local_to_global(*self.anchor_pt("screen", (0.5, 0.7)))
 
     def pick_target(self):
@@ -1356,12 +1403,26 @@ class Companion(QWidget):
     def anchors(self):
         return FORM_ANCHORS.get(self.cur_file.name) if self.cur_file else None
 
+    def chibi_mode(self):
+        return self.cfg.get("sw999_style", "chibi") == "chibi" and len(self.stickers) >= 4
+
     def has_form_art(self):
-        return self.form_movie is not None or self.form_scaled is not None
+        return self.chibi_mode() or self.form_movie is not None or self.form_scaled is not None
+
+    @property
+    def fmeta(self):
+        """Anchor points for the current LV.999 look."""
+        return CHIBI_META if self.chibi_mode() else self.form_meta
+
+    def can_godmode(self):
+        return self.chibi_mode() or (self.has_form_art() and self.form_bare_scaled is not None)
 
     def form_sprite(self, pix, bare=False):
         """The LV.999 pixmap and its top-left offset inside the img_w x img_h box.
         bare=True gives the version without the visor on her head."""
+        if self.chibi_mode():
+            art = self.stickers[self.sticker_cur]
+            return art, (self.img_w - art.width()) / 2, self.img_h - art.height()
         if self.has_form_art():
             art = self.form_movie.currentPixmap() if self.form_movie else self.form_scaled
             if bare and self.form_bare_scaled is not None:
@@ -1475,7 +1536,8 @@ class Companion(QWidget):
             if phase == "insert" and fk >= INSERT_HIT:  # crystals burst as the cartridge locks in
                 self.paint_crystal_burst(p, (fk - INSERT_HIT) / (1 - INSERT_HIT))
 
-            bare = art and self.form_bare_scaled is not None and phase in ("visor", "active", "godoff")
+            bare = art and not self.chibi_mode() and self.form_bare_scaled is not None \
+                and phase in ("visor", "active", "godoff")
             if phase == "derez":
                 if fk < 0.5:
                     self.paint_blocks(p, pix, 0, 0, fk * 2, gathering=False)
@@ -1486,6 +1548,9 @@ class Companion(QWidget):
                     self.paint_blocks(p, *self.form_sprite(pix, bare), fk * 2, gathering=False)
                 else:
                     self.paint_blocks(p, pix, 0, 0, fk * 2 - 1, gathering=True)
+            elif self.chibi_mode() and phase in ("insert", "settle", "lv999", "visor", "active", "godoff",
+                                                 "unsettle", "eject"):
+                self.paint_sticker_body(p, phase, glitching)
             elif phase in ("insert", "eject"):
                 self.draw_pix(p, *self.form_sprite(pix), glitching)
             elif phase in ("settle", "unsettle", "lv999", "visor", "godoff"):
@@ -1500,7 +1565,8 @@ class Companion(QWidget):
             # in front of her
             if not art and (phase in ("insert", "digital") or (phase == "derez" and fk < 0.5)):
                 self.paint_screen_glow(p, phase, fk)
-            if art and (phase in ("visor", "active") or (phase == "insert" and fk >= INSERT_HIT)):
+            if art and not self.chibi_mode() and (phase in ("visor", "active")
+                                                  or (phase == "insert" and fk >= INSERT_HIT)):
                 self.paint_gauntlet_glow(p, phase, fk)
             self.paint_cartridge(p, phase, fk)
             if bare:
@@ -1584,8 +1650,8 @@ class Companion(QWidget):
         p.restore()
 
     def wing_root(self):
-        if self.has_form_art() and "back" in self.form_meta:
-            return self.form_point(*self.form_meta["back"])
+        if self.has_form_art() and "back" in self.fmeta:
+            return self.form_point(*self.fmeta["back"])
         return self.anchor_pt("back", (0.45, 0.55))
 
     def paint_light_wings(self, p, amount, lift):
@@ -1659,6 +1725,28 @@ class Companion(QWidget):
             p.setPen(QPen(QColor(230, 255, 255, 220), 1))
             p.setBrush(QColor(94, 200, 255, 150) if i % 3 else QColor(140, 120, 255, 150))
             p.drawPolygon(poly)
+        p.restore()
+
+    def paint_sticker_body(self, p, phase, glitching):
+        """LV.999 chibi: the current sticker, with a quick pop when it changes."""
+        u = min(1.0, (self.t - self.sticker_t) / 0.22)
+        cur, prev = self.stickers[self.sticker_cur], self.stickers[self.sticker_prev]
+
+        def place(px):
+            return (self.img_w - px.width()) / 2, self.img_h - px.height()
+        if phase == "active":
+            self.paint_aura(p, cur, *place(cur))
+        base = p.opacity()
+        p.save()
+        if u < 1:  # bounce about her base and crossfade while the sticker swaps
+            sc = 1 + 0.1 * math.sin(u * math.pi)
+            p.translate(self.img_w / 2, self.img_h)
+            p.scale(sc, sc)
+            p.translate(-self.img_w / 2, -self.img_h)
+            p.setOpacity(base * (1 - u))
+            self.draw_pix(p, prev, *place(prev), glitching)
+            p.setOpacity(base * u)
+        self.draw_pix(p, cur, *place(cur), glitching)
         p.restore()
 
     def idle_frame(self):
@@ -1902,8 +1990,8 @@ class Companion(QWidget):
     def gauntlet_pt(self):
         """Where the cartridge goes: her gauntlet (full-size art) or, without
         the art, the chibi's handheld."""
-        if self.has_form_art() and "gauntlet" in self.form_meta:
-            return self.form_point(*self.form_meta["gauntlet"])
+        if self.has_form_art() and "gauntlet" in self.fmeta:
+            return self.form_point(*self.fmeta["gauntlet"])
         return self.anchor_pt("slot", (0.5, 0.7))
 
     def cart_hover_pt(self):
@@ -1965,7 +2053,7 @@ class Companion(QWidget):
     def paint_gauntlet_glow(self, p, phase, k):
         """Once the cartridge is in, her gauntlet's gems light up and a 999
         readout flashes over it, as in the cutscene."""
-        if "gems" not in self.form_meta:
+        if "gems" not in self.fmeta:
             return
         gx, gy = self.gauntlet_pt()
         if phase == "insert":
@@ -2529,6 +2617,7 @@ class Companion(QWidget):
                 self.lv_boops = []
                 self.godmode()
             else:
+                self.sticker_until = self.t + 1.5  # points at you
                 self.say("sw999_boop", cooldown=5)
         else:
             self.floaters.append(dict(text="+1 EXP", x=PAD + self.img_w * 0.62 + random.uniform(-10, 10),
@@ -2572,13 +2661,19 @@ class Companion(QWidget):
         m.addAction("Say something", lambda: self.say("night" if self.is_sleepy() else "idle", force=True))
         m.addSeparator()
         if self.form_phase:
-            if self.form_phase == "lv999" and self.form_bare_scaled is not None:
+            if self.form_phase == "lv999" and self.can_godmode():
                 m.addAction("Godmode!  (or boop her 3x)", self.godmode)
             m.addAction("Eject cartridge (back to Lv.{})".format(self.cfg["level"]), self.revert)
         else:
             m.addAction("Insert cartridge: LV.999  (or boop 10x fast)", self.transform)
         toggle("Surprise LV.999 transformations", "sw999_auto")
         toggle("Godmode: fly around and attack (experimental)", "sw999_play")
+        look = m.addMenu("LV.999 look")
+        for label, val in (("Chibi (stickers)", "chibi"), ("Full size", "full")):
+            a = QAction(label, look, checkable=True)
+            a.setChecked(self.cfg.get("sw999_style", "chibi") == val)
+            a.triggered.connect(lambda _=False, val=val: (self.cfg.__setitem__("sw999_style", val), self.save()))
+            look.addAction(a)
         dur = m.addMenu("LV.999 duration")
         for secs in (20, 30, 60, 120, 300):
             a = QAction(f"{secs} s", dur, checkable=True)
