@@ -148,6 +148,31 @@ def main():
     fall = seq([84, 79, 72], 0.06, "square", 0.25)
     save("eject", np.concatenate([pop * env(len(pop), r=0.04), fall]))
 
+    # digital: quick run of data bleeps as the circuit world opens
+    rng = np.random.default_rng(31)
+    save("digital", seq([int(n) for n in rng.choice([72, 76, 79, 81, 84, 88, 91], 18)], 0.055,
+                        "square", 0.125, rel=0.015) * 0.8)
+
+    # laser: bright zap falling in pitch
+    z = tone(note(100), 0.32, "square", 0.25, slide=-0.7, vib=30)
+    n = tone(7000, 0.32, "noise") * np.linspace(0.4, 0, int(SR * 0.32))
+    save("laser", mix(z * env(len(z), r=0.15), n))
+
+    # boom: bitcrushed pixel explosion
+    b = tone(1800, 0.6, "noise") * np.linspace(1, 0, int(SR * 0.6)) ** 1.5
+    lo = np.round(tone(note(40), 0.6, "square", 0.5, slide=-0.6) * 2) / 2
+    save("boom", mix(b, lo * env(len(lo), r=0.4) * 0.7))
+
+    # slash: whoosh
+    w = tone(5000, 0.2, "noise") * np.sin(np.linspace(0, np.pi, int(SR * 0.2)))
+    blip = tone(note(88), 0.08, "square", 0.25, slide=-0.5)
+    save("slash", mix(w * 0.8, blip * env(len(blip), r=0.05) * 0.5))
+
+    # win: "YOU WIN" fanfare
+    lead = seq([72, 76, 79, 84, None, 79, 84, 88], 0.08, "square", 0.25, gap=0.01)
+    hold = mix(*(tone(note(m), 0.5, "square", 0.25, vib=6) for m in (84, 88, 91)))
+    save("win", np.concatenate([lead, hold * env(len(hold), r=0.35) * 0.7]))
+
 
 if __name__ == "__main__":
     main()

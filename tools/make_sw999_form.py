@@ -10,7 +10,7 @@ Writes (all git-ignored: the art is HoYoverse's, keep it local):
   forms/sw999.png          her, cut out of the background
   forms/sw999_novisor.png  same, with the visor on her head painted out
   forms/sw999_visor.png    just the visor, so it can slide down onto her eyes
-  forms/sw999.json         where the visor, eyes and wing root are (fractions)
+  forms/sw999.json         where the visor, eyes, wings and gauntlet are (fractions)
 
 The visor outline and eye position below are measured on the in-game model
 screenshot (850x1511). For a different picture, re-measure them.
@@ -35,6 +35,9 @@ VISOR_POLY = [(333, 140), (350, 127), (395, 124), (420, 128), (445, 124), (500, 
 VISOR_BOX = (322, 116, 532, 188)
 EYES = (427, 245, 150)      # centre x, centre y, width across both eyes
 WING_ROOT = (425, 520)      # between the shoulder blades
+GAUNTLET = (213, 718)       # hub on the back of her gauntlet: the cartridge slots in here
+HAND = (180, 790)           # gauntlet fingertips: where her beams come from
+GEMS = [(178, 747), (222, 750)]  # the gauntlet's visible gems (pink, cyan)
 
 
 def main():
@@ -73,6 +76,9 @@ def main():
         visor=[(vx0 - x0) / w, (vy0 - y0) / h, (vx1 - vx0) / w, (vy1 - vy0) / h],  # x, y, w, h
         eyes=[(EYES[0] - x0) / w, (EYES[1] - y0) / h, EYES[2] / w],               # x, y, width
         back=[(WING_ROOT[0] - x0) / w, (WING_ROOT[1] - y0) / h],
+        gauntlet=[(GAUNTLET[0] - x0) / w, (GAUNTLET[1] - y0) / h],
+        hand=[(HAND[0] - x0) / w, (HAND[1] - y0) / h],
+        gems=[[(gx - x0) / w, (gy - y0) / h] for gx, gy in GEMS],
     )
     (OUT / "sw999.json").write_text(json.dumps(meta, indent=2) + "\n")
     print("wrote", ", ".join(p.name for p in sorted(OUT.glob("sw999*"))), f"({w}x{h})")

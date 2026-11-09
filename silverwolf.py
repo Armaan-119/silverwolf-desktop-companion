@@ -30,7 +30,7 @@ import psutil
 from PyQt6.QtCore import (QFileSystemWatcher, QPointF, QProcess, QRect, QRectF,
                           QSize, Qt, QTimer, QUrl)
 from PyQt6.QtGui import (QAction, QColor, QCursor, QDesktopServices, QFont,
-                         QFontMetrics, QGuiApplication, QIcon,
+                         QFontMetrics, QGuiApplication, QIcon, QImage,
                          QLinearGradient, QMovie, QPainter, QPainterPath,
                          QPen, QPixmap, QPolygonF, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QMenu,
@@ -65,8 +65,10 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "insert": 0.3, "digital": 1.4, "derez": 1.0, "visor": 1.1,
-           "rerez": 0.9, "eject": 0.8}
+PHASE_T = {"cart": 0.9, "digital": 1.4, "derez": 1.0, "insert": 0.9, "visor": 1.1,
+           "eject": 0.7, "rerez": 0.9}
+INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
+BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
 #   slot = top of her handheld, screen = its screen, back = wing root.
 FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0.73), back=(0.42, 0.56))}
@@ -256,6 +258,28 @@ class Bubble(QWidget):
         p.end()
 
 
+# ------------------------------------------------------------------ godmode effects layer
+class FxLayer(QWidget):
+    """Transparent, click-through window over the whole screen. In godmode her
+    lasers, sword, light trail and YOU WIN don't fit in her own small window."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint
+                            | Qt.WindowType.Tool
+                            | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.owner.paint_fx(p, QPointF(self.pos()))
+        p.end()
+
+
 # ------------------------------------------------------------------ companion
 class Companion(QWidget):
     def __init__(self):
@@ -296,6 +320,16 @@ class Companion(QWidget):
         self.form_meta = {}
         self.form_flag = False
         self.form_src_size = QSize(1, 1)
+        # godmode play
+        self.fxl = None
+        self.fx = []
+        self.trail = []
+        self.fly = None
+        self.fly_tilt = 0.0
+        self.home = None
+        self.won = False
+        self.next_act = 0.0
+        self.last_act = None
         self.form_cache = {}
         self.block_cache = {}
 
@@ -770,13 +804,14 @@ class Companion(QWidget):
             self.pop_gum()
 
         self.update_form(dt)
+        self.update_fx_layer()
         self.update_particles(dt, sleepy)
         for f in self.floaters:
             f["life"] -= dt
             f["y"] += f["vy"] * dt
         self.floaters = [f for f in self.floaters if f["life"] > 0]
 
-        if self.cfg["wander"] and self.drag_off is None and not sleepy:
+        if self.cfg["wander"] and self.drag_off is None and not sleepy and not self.form_phase:
             self.wander(dt)
 
         self.sys_acc += dt
@@ -923,16 +958,17 @@ class Companion(QWidget):
     # ---------- SW999 transformation ----------
     # LV.999 is her future self, sealed inside a game cartridge (Elio keeps it).
     # Follows her in-game transformation:
-    #   cart     cartridge tossed in          insert  slots into her handheld
-    #   digital  circuit-board world, pixel scan, floating cubes, "999"
+    #   cart     cartridge tossed in, hovers    digital  circuit-board world
     #   derez    the chibi breaks into pixels and re-forms full size
+    #   insert   the cartridge slots into her gauntlet, gems light up, crystals burst
     #   visor    she pulls her visor down and it becomes the godmode shades
-    #   active   godmode: wings of light spread
-    #   rerez    pixels back to the chibi     eject   cartridge flies off
+    #   active   godmode: wings of light, and she plays around the screen
+    #   eject    cartridge pops out of the gauntlet   rerez  pixels back to chibi
     def transform(self):
         if self.form_phase or not self.isVisible():
             return
         self.form_phase, self.form_t0 = "cart", self.t
+        self.form_flag = False
         self.gum_t = None
         self.jump = self.jump_v = 0.0
         self.bubble.hide()
@@ -942,36 +978,41 @@ class Companion(QWidget):
 
     def revert(self):
         ph = self.form_phase
-        if ph == "cart":
+        if ph in ("cart", "digital"):
             self.form_phase = None
-        elif ph in ("insert", "digital"):
-            self.set_phase("eject")
-        elif ph in ("derez", "visor", "active"):
+            self.start_glitch(0.2)
+        elif ph == "derez":
             self.set_phase("rerez")
+        elif ph in ("insert", "visor", "active"):
+            self.set_phase("eject")
 
     def set_phase(self, ph):
         self.form_phase, self.form_t0 = ph, self.t
         self.form_flag = False
         if ph == "digital":
-            self.play("transform")  # insert click + boot jingle
+            self.play("digital")
         elif ph == "derez":
             self.play("glitch")
             self.start_glitch(0.15)
+        elif ph == "insert":
+            self.play("cart")
         elif ph == "active":
             self.floaters.append(dict(text="GODMODE", x=self.width() / 2 - 62, y=PAD - 20, vy=-14,
                                       life=2.0, max=2.0, color=PINK, size=20, big=True))
             self.say("sw999_on", force=True)
+            self.start_godmode()
+        elif ph == "eject":
+            self.play("eject")
+            self.end_godmode()
         elif ph == "rerez":
             self.play("revert")
             self.start_glitch(0.2)
-        elif ph == "eject":
-            self.play("eject")
 
     def form_progress(self):
         """(phase, 0..1 progress through it)."""
         if not self.form_phase:
             return None, 0.0
-        dur = PHASE_T.get(self.form_phase) or max(4.0, float(self.cfg.get("sw999_seconds", 12)))
+        dur = PHASE_T.get(self.form_phase) or max(6.0, float(self.cfg.get("sw999_seconds", 12)))
         return self.form_phase, max(0.0, min(1.0, (self.t - self.form_t0) / dur))
 
     def form_amount(self):
@@ -980,14 +1021,15 @@ class Companion(QWidget):
         if ph == "active":
             u = min(1.0, (self.t - self.form_t0) / 0.7)
             return 1 - (1 - u) ** 3
-        if ph == "rerez":
-            return max(0.0, 1 - k * 2)
+        if ph == "eject":
+            return max(0.0, 1 - k)
         return 0.0
 
     def body_is_form(self):
         """Is the full-size LV.999 body what's on screen right now?"""
         ph, k = self.form_progress()
-        return ph in ("visor", "active") or (ph == "derez" and k >= 0.5) or (ph == "rerez" and k < 0.5)
+        return ph in ("insert", "visor", "active", "eject") or (ph == "derez" and k >= 0.5) \
+            or (ph == "rerez" and k < 0.5)
 
     def update_form(self, dt):
         ph, k = self.form_progress()
@@ -996,19 +1038,27 @@ class Companion(QWidget):
         if ph == "digital" or (ph == "active" and random.random() < dt * 3):
             for _ in range(int(dt * 30) + (random.random() < (dt * 30) % 1)):
                 self.spawn_cube()
+        if ph == "insert" and k >= INSERT_HIT and not self.form_flag:  # cartridge locks into the gauntlet
+            self.form_flag = True
+            self.play("transform")
+            self.start_glitch(0.12)
+            for _ in range(20):
+                self.spawn_cube(burst=True)
         if ph == "visor" and k >= 0.45 and not self.form_flag:  # shades lock on
             self.form_flag = True
             self.play("godmode")
             for _ in range(24):
                 self.spawn_cube(burst=True)
+        if ph == "active":
+            self.update_godmode(dt, k)
         if k < 1:
             return
-        nxt = {"cart": "insert", "insert": "digital", "digital": "derez", "derez": "visor",
-               "visor": "active", "active": "rerez", "rerez": "eject"}.get(ph)
+        nxt = {"cart": "digital", "digital": "derez", "derez": "insert", "insert": "visor",
+               "visor": "active", "active": "eject", "eject": "rerez"}.get(ph)
         if nxt:
             self.set_phase(nxt)
             return
-        self.form_phase = None  # eject finished
+        self.form_phase = None  # rerez finished
         if self.form_movie:
             self.form_movie.stop()
         self.say("sw999_off", force=True)
@@ -1026,6 +1076,131 @@ class Companion(QWidget):
         self.particles.append(dict(x=x, y=y, vx=vx, vy=vy, life=life, max=life, kind="cube",
                                    color=random.choice(CUBE_COLORS), ch="", size=random.choice((4, 5, 6, 8)),
                                    blink=random.uniform(3, 7)))
+
+    # ---------- godmode: she plays around the whole screen ----------
+    def start_godmode(self):
+        self.home = QPointF(self.pos())
+        self.fly = None
+        self.trail = []
+        self.fx = []
+        self.won = False
+        self.last_act = None
+        self.next_act = self.t + 0.9
+        self.fly_tilt = 0.0
+        if self.fxl is None:
+            self.fxl = FxLayer(self)
+        scr = QGuiApplication.screenAt(self.geometry().center()) or QGuiApplication.primaryScreen()
+        self.fxl.setGeometry(scr.geometry())
+        self.fxl.show()
+        self.raise_()
+
+    def end_godmode(self):
+        self.fly = None
+        self.fly_tilt = 0.0
+        self.save()
+
+    def screen_box(self):
+        """Where her window may go: the screen minus her own size."""
+        r = self.screen_rect()
+        return r.left(), r.top(), max(r.left(), r.right() - self.width()), max(r.top(), r.bottom() - self.height())
+
+    def fly_to(self, target, dur=None):
+        a = QPointF(self.pos())
+        d = math.hypot(target.x() - a.x(), target.y() - a.y())
+        self.fly = dict(t0=self.t, dur=dur or max(0.6, min(1.3, d / 700)), a=a, b=target)
+        self.play("cart")
+
+    def local_to_global(self, lx, ly):
+        """Her local (img box) coordinates -> global screen position (ignores the small tilt)."""
+        m = -1 if self.cfg["mirror"] else 1
+        wx = self.width() / 2 + m * (lx - self.img_w / 2)
+        wy = PAD + self.img_h / 2 + self.lift() + (ly - self.img_h / 2)
+        return QPointF(self.x() + wx, self.y() + wy)
+
+    def hand_global(self):
+        if self.has_form_art() and "hand" in self.form_meta:
+            return self.local_to_global(*self.form_point(*self.form_meta["hand"]))
+        return self.local_to_global(*self.anchor_pt("screen", (0.5, 0.7)))
+
+    def pick_target(self):
+        """Aim at the mouse pointer if it's not right on top of her, else somewhere on screen."""
+        c = QPointF(QCursor.pos())
+        me = QPointF(self.geometry().center())
+        if math.hypot(c.x() - me.x(), c.y() - me.y()) > 160:
+            return c
+        r = self.screen_rect()
+        return QPointF(random.uniform(r.left() + 80, r.right() - 80), random.uniform(r.top() + 80, r.bottom() - 80))
+
+    def update_godmode(self, dt, k):
+        now = self.t
+        # flying
+        if self.fly:
+            f = self.fly
+            u = min(1.0, (now - f["t0"]) / f["dur"])
+            e = u * u * (3 - 2 * u)
+            pos = f["a"] + (f["b"] - f["a"]) * e
+            vx = (f["b"].x() - f["a"].x()) / f["dur"]
+            self.fly_tilt = max(-14.0, min(14.0, vx / 60)) * math.sin(u * math.pi)
+            self.move(round(pos.x()), round(pos.y()))
+            if u >= 1:
+                self.fly = None
+                self.fly_tilt = 0.0
+                self.next_act = now + 0.35
+        if self.fly:  # light trail behind her
+            c = self.local_to_global(*self.wing_root())
+            self.trail.append((c.x(), c.y(), now))
+        # next move
+        if self.fly or now < self.next_act or self.drag_off is not None:
+            return
+        left = (1 - k) * max(6.0, float(self.cfg.get("sw999_seconds", 12)))
+        if not self.won and left < 3.4:
+            if math.hypot(self.x() - self.home.x(), self.y() - self.home.y()) > 30:
+                self.fly_to(self.home)  # head home for the finale
+                self.last_act = "fly"
+            else:
+                self.won = True
+                self.fx.append(dict(kind="win", t0=now, dur=2.4))
+                self.play("win")
+                self.next_act = now + 99
+            return
+        if self.won:
+            return
+        if self.last_act != "fly":
+            x0, y0, x1, y1 = self.screen_box()
+            for _ in range(8):  # a spot a decent distance away
+                t = QPointF(random.uniform(x0, x1), random.uniform(y0, y1))
+                if math.hypot(t.x() - self.x(), t.y() - self.y()) > 220:
+                    break
+            self.fly_to(t)
+            self.last_act = "fly"
+            return
+        act = random.choice([a for a in ("rain", "beam", "slash") if a != getattr(self, "prev_attack", None)])
+        self.prev_attack = self.last_act = act
+        if act == "rain":
+            target = self.pick_target()
+            rng = random.Random()
+            n = 16
+            starts = []
+            for i in range(n):
+                ang = math.radians(-170 + 160 * i / (n - 1) + rng.uniform(-4, 4))  # from above, all around
+                r = rng.uniform(380, 620)
+                starts.append((target.x() + math.cos(ang) * r, target.y() + math.sin(ang) * r, rng.uniform(0, 0.3)))
+            self.fx.append(dict(kind="rain", t0=now, dur=1.7, target=target, starts=starts))
+            self.play("laser")
+            self.next_act = now + 1.8
+        elif act == "beam":
+            self.fx.append(dict(kind="beam", t0=now, dur=1.1, target=self.pick_target()))
+            self.next_act = now + 1.2
+        else:
+            self.fx.append(dict(kind="slash", t0=now, dur=0.9, side=random.choice((-1, 1))))
+            self.next_act = now + 1.0
+
+    def add_burst(self, at, n, colors):
+        """Pixel explosion on the effects layer (positions are computed from time)."""
+        rng = random.Random()
+        bits = [(rng.uniform(0, 2 * math.pi), rng.uniform(80, 340), rng.choice(colors), rng.choice((5, 7, 9, 12)))
+                for _ in range(n)]
+        self.fx.append(dict(kind="burst", t0=self.t, dur=0.9, at=QPointF(at), bits=bits))
 
     def anchors(self):
         return FORM_ANCHORS.get(self.cur_file.name) if self.cur_file else None
@@ -1111,6 +1286,8 @@ class Companion(QWidget):
         big = art and self.body_is_form()  # full-size LV.999 on screen
         if big:
             tilt *= 0.4  # she's tall; a big sway looks seasick
+        if phase == "active":
+            tilt += self.fly_tilt  # leans into the direction she's flying
 
         cx = self.width() / 2
         sy = PAD + self.img_h + 26
@@ -1144,10 +1321,10 @@ class Companion(QWidget):
             amount = self.form_amount()
             if amount > 0:
                 self.paint_light_wings(p, amount, lift)
-            if phase == "derez" and fk >= 0.5:
-                self.paint_crystal_burst(p, fk * 2 - 1)
+            if phase == "insert" and fk >= INSERT_HIT:  # crystals burst as the cartridge locks in
+                self.paint_crystal_burst(p, (fk - INSERT_HIT) / (1 - INSERT_HIT))
 
-            bare = art and self.form_bare_scaled is not None and phase in ("visor", "active", "rerez")
+            bare = art and self.form_bare_scaled is not None and phase in ("visor", "active", "eject", "rerez")
             if phase == "derez":
                 if fk < 0.5:
                     self.paint_blocks(p, pix, 0, 0, fk * 2, gathering=False)
@@ -1158,7 +1335,7 @@ class Companion(QWidget):
                     self.paint_blocks(p, *self.form_sprite(pix, bare), fk * 2, gathering=False)
                 else:
                     self.paint_blocks(p, pix, 0, 0, fk * 2 - 1, gathering=True)
-            elif phase in ("visor", "active"):
+            elif phase in ("insert", "visor", "active", "eject"):
                 form, ox, oy = self.form_sprite(pix, bare)
                 self.paint_aura(p, form, ox, oy)
                 self.draw_pix(p, form, ox, oy, glitching)
@@ -1166,8 +1343,10 @@ class Companion(QWidget):
                 self.draw_pix(p, pix, 0, 0, glitching)
 
             # in front of her
-            if phase in ("insert", "digital") or (phase == "derez" and fk < 0.5):
+            if not art and (phase in ("insert", "digital") or (phase == "derez" and fk < 0.5)):
                 self.paint_screen_glow(p, phase, fk)
+            if art and (phase in ("visor", "active") or (phase == "insert" and fk >= INSERT_HIT)):
+                self.paint_gauntlet_glow(p, phase, fk)
             self.paint_cartridge(p, phase, fk)
             if bare:
                 self.paint_visor_and_shades(p, phase, fk)
@@ -1354,7 +1533,7 @@ class Companion(QWidget):
                 p.restore()
             self.paint_flash(p, tx, ty, width * 1.6, 1 - abs(u * 2 - 1))
             self.draw_shades(p, tx, ty, width, 0.55 + 0.45 * u, u, sparkle=1.0 - 0.6 * min(1.0, (k - 0.45) / 0.55))
-        elif phase == "active":
+        elif phase in ("active", "eject"):
             sp = max(0.0, math.sin(self.t * 1.3)) ** 12  # an occasional glint
             self.draw_shades(p, tx, ty, width, 1.0, 1.0, sparkle=0.4 * sp)
         elif phase == "rerez" and k < 0.5:
@@ -1436,44 +1615,112 @@ class Companion(QWidget):
             p.drawText(QRectF(sx - r * 1.5, sy - r, r * 3, r * 2), Qt.AlignmentFlag.AlignCenter, "999")
         p.restore()
 
-    def cart_size(self):
-        ch = 0.12 * self.img_h
+    def cart_size(self, small=False):
+        ch = (0.06 if small else 0.12) * self.img_h
         return ch * 0.82, ch
 
+    def gauntlet_pt(self):
+        """Where the cartridge goes: her gauntlet (full-size art) or, without
+        the art, the chibi's handheld."""
+        if self.has_form_art() and "gauntlet" in self.form_meta:
+            return self.form_point(*self.form_meta["gauntlet"])
+        return self.anchor_pt("slot", (0.5, 0.7))
+
+    def cart_hover_pt(self):
+        return self.img_w * 0.7, -PAD * 0.3 + math.sin(self.t * 2.2) * 4
+
     def paint_cartridge(self, p, phase, k):
-        if phase not in ("cart", "insert", "digital", "derez", "eject") or (phase == "derez" and k >= 0.5):
+        if phase not in ("cart", "digital", "derez", "insert", "visor", "active", "eject"):
             return
-        slot_x, slot_y = self.anchor_pt("slot", (0.5, 0.7))
-        cw, ch = self.cart_size()
-        seated = slot_y + ch * 0.35  # how deep it sits once inserted
-        x, y, ang, clip = slot_x, seated, 0.0, True
+        hx, hy = self.cart_hover_pt()
+        gx, gy = self.gauntlet_pt()
+        big_w, big_h = self.cart_size()
+        sm_w, sm_h = self.cart_size(small=True)
+        x, y, ang, cw, ch, glow = hx, hy, math.sin(self.t * 1.7) * 14, big_w, big_h, 1.0
         alpha = 1.0
-        if phase == "cart":  # tossed in from above, spinning, lands on the slot
+        if phase == "cart":  # tossed in from above, spinning, then hovers
             e = 1 - (1 - k) ** 3
-            x = slot_x + (1 - e) * 0.35 * self.img_w
-            y = (-PAD - ch) + (slot_y - (-PAD - ch)) * e
-            ang = (1 - e) * 540
-            clip = False
-        elif phase == "insert":  # chk
-            y = slot_y + (seated - slot_y) * (k * k)
-        elif phase == "derez":  # breaks up with her
-            alpha = max(0.0, 1 - k * 2.5)
-        elif phase == "eject":  # pops out and flies back off-screen
-            u = min(1.0, k / 0.2)
-            y = seated - (seated - slot_y + ch * 0.2) * u
-            if k > 0.2:
+            x = hx + (1 - e) * 0.3 * self.img_w
+            y = (-PAD - big_h) + (hy - (-PAD - big_h)) * e
+            ang = (1 - e) * 540 + e * ang
+            glow = e
+        elif phase == "insert":
+            u = min(1.0, k / INSERT_HIT)
+            e = u * u  # accelerates into the slot
+            x, y = hx + (gx - hx) * e, hy + (gy - hy) * e
+            ang *= 1 - u
+            cw, ch = big_w + (sm_w - big_w) * e, big_h + (sm_h - big_h) * e
+            glow = 1.0 - 0.5 * u
+        elif phase in ("visor", "active"):
+            x, y, ang, cw, ch, glow = gx, gy, 0.0, sm_w, sm_h, 0.5 + 0.2 * math.sin(self.t * 4)
+        elif phase == "eject":  # pops out of the gauntlet and flies off-screen
+            if k < 0.2:
+                x, y, ang, cw, ch = gx, gy - (k / 0.2) * big_h * 0.8, 0.0, sm_w, sm_h
+            else:
                 v = (k - 0.2) / 0.8
-                x = slot_x + v * 0.5 * self.img_w
-                y = slot_y - ch * 0.2 - v * (slot_y + PAD + ch * 2) + 30 * v * (1 - v)
+                x = gx + v * 0.6 * self.img_w
+                y = gy - big_h * 0.8 - v * (gy + PAD + big_h * 2)
                 ang = -v * 720
-                clip = False
+                cw, ch = sm_w + (big_w - sm_w) * v, sm_h + (big_h - sm_h) * v
+            glow = 0.6
         p.save()
         p.setOpacity(alpha)
-        if clip:  # the part below the slot is inside the handheld
-            p.setClipRect(QRectF(-4 * self.img_w, -4 * self.img_h, 8 * self.img_w, 4 * self.img_h + slot_y))
+        if glow > 0:  # the sealed LV.999 humming inside it
+            r = ch * 1.1
+            g = QRadialGradient(x, y - ch / 2, r)
+            c0 = QColor(PINK if int(self.t * 3) % 2 else CYAN)
+            c0.setAlpha(int(140 * glow))
+            c1 = QColor(c0)
+            c1.setAlpha(0)
+            g.setColorAt(0, c0)
+            g.setColorAt(1, c1)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawEllipse(QPointF(x, y - ch / 2), r, r)
         p.translate(x, y)
         p.rotate(ang)
         self.draw_cart_shape(p, cw, ch)
+        p.restore()
+
+    def paint_gauntlet_glow(self, p, phase, k):
+        """Once the cartridge is in, her gauntlet's gems light up and a 999
+        readout flashes over it, as in the cutscene."""
+        if "gems" not in self.form_meta:
+            return
+        gx, gy = self.gauntlet_pt()
+        if phase == "insert":
+            u = (k - INSERT_HIT) / (1 - INSERT_HIT)
+        else:
+            u = 1.0
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        cols = (PINK, CYAN, QColor("#ffe066"), QColor("#7dff9a"))
+        for i, (fx, fy) in enumerate(self.form_meta["gems"]):
+            on = max(0.0, min(1.0, u * 3 - i * 0.6))  # light up one after another
+            if on <= 0:
+                continue
+            x, y = self.form_point(fx, fy)
+            pulse = 0.7 + 0.3 * math.sin(self.t * 6 + i)
+            r = 0.035 * self.img_h * (1 + (1 - on) * 1.5)
+            g = QRadialGradient(x, y, r)
+            c0, c1 = QColor(cols[i % len(cols)]), QColor(cols[i % len(cols)])
+            c0.setAlpha(int(230 * on * pulse))
+            c1.setAlpha(0)
+            g.setColorAt(0, QColor(255, 255, 255, int(230 * on * pulse)))
+            g.setColorAt(0.35, c0)
+            g.setColorAt(1, c1)
+            p.setBrush(g)
+            p.drawEllipse(QPointF(x, y), r, r)
+        if phase == "insert" and u > 0:  # "999" readout
+            f = QFont("Source Code Pro")
+            f.setPixelSize(max(8, int(0.05 * self.img_h)))
+            f.setBold(True)
+            p.setFont(f)
+            a = min(1.0, u * 3) * (1 - max(0.0, u - 0.7) / 0.3)
+            c = QColor(PINK)
+            c.setAlphaF(max(0.0, a))
+            p.setPen(c)
+            p.drawText(QPointF(gx - 0.05 * self.img_h, gy - 0.05 * self.img_h - u * 8), "999")
         p.restore()
 
     @staticmethod
@@ -1592,6 +1839,262 @@ class Companion(QWidget):
             y += cell
         p.restore()
 
+    # --- godmode effects layer (full screen, global coordinates) ---
+    def update_fx_layer(self):
+        now = self.t
+        for fx in self.fx:
+            u = (now - fx["t0"]) / fx["dur"]
+            if fx["kind"] == "rain" and u >= 0.58 and not fx.get("boomed"):
+                fx["boomed"] = True
+                self.play("boom")
+                self.add_burst(fx["target"], 46, BOOM_COLORS)
+            elif fx["kind"] == "beam" and u >= 0.25 and not fx.get("fired"):
+                fx["fired"] = True
+                self.play("laser")
+                self.add_burst(fx["target"], 22, SW999_COLORS)
+            elif fx["kind"] == "slash" and u >= 0.25 and not fx.get("swung"):
+                fx["swung"] = True
+                self.play("slash")
+            elif fx["kind"] == "win" and not fx.get("popped"):
+                fx["popped"] = True
+                r = self.fxl.geometry() if self.fxl else self.screen_rect()
+                for sx in (0.3, 0.7):
+                    self.add_burst(QPointF(r.left() + r.width() * sx, r.top() + r.height() * 0.42), 30, CUBE_COLORS)
+        self.fx = [fx for fx in self.fx if now - fx["t0"] < fx["dur"]]
+        self.trail = [q for q in self.trail if now - q[2] < 0.6]
+        if self.fxl is None or not self.fxl.isVisible():
+            return
+        if self.form_phase != "active" and not self.fx and not self.trail:
+            self.fxl.hide()
+        else:
+            self.fxl.update()
+
+    def paint_fx(self, p, org):
+        now = self.t
+
+        def L(pt):
+            return QPointF(pt.x() - org.x(), pt.y() - org.y())
+        # light trail while she flies
+        for (x0, y0, t0), (x1, y1, t1) in zip(self.trail, self.trail[1:]):
+            a = max(0.0, 1 - (now - t1) / 0.6)
+            for col, wd, al in ((PINK, 18, 70), (CYAN, 9, 130), (QColor("#ffffff"), 3, 220)):
+                c = QColor(col)
+                c.setAlpha(int(al * a))
+                p.setPen(QPen(c, wd * a + 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(L(QPointF(x0, y0)), L(QPointF(x1, y1)))
+        for fx in self.fx:
+            u = max(0.0, (now - fx["t0"]) / fx["dur"])
+            getattr(self, "fx_" + fx["kind"])(p, fx, u, L)
+
+    def fx_rain(self, p, fx, u, L):
+        """Lasers raining in from all around onto one spot (her ultimate)."""
+        t = L(fx["target"])
+        fade = 1.0 if u < 0.58 else max(0.0, 1 - (u - 0.58) / 0.15)
+        for i, (sx, sy, delay) in enumerate(fx["starts"]):
+            v = max(0.0, min(1.0, (u - delay) / 0.28))
+            if v <= 0 or fade <= 0:
+                continue
+            s = L(QPointF(sx, sy))
+            head = QPointF(s.x() + (t.x() - s.x()) * v, s.y() + (t.y() - s.y()) * v)
+            col = (CYAN, QColor("#ffffff"), PINK, QColor("#b7a8ff"))[i % 4]
+            c = QColor(col)
+            c.setAlpha(int(110 * fade))
+            p.setPen(QPen(c, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(s, head)
+            p.setPen(QPen(QColor(255, 255, 255, int(230 * fade)), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(s, head)
+        if 0.45 < u < 0.75:  # converge flash
+            a = 1 - abs((u - 0.6) / 0.15)
+            self.paint_flash(p, t.x(), t.y(), 70, a)
+
+    def fx_burst(self, p, fx, u, L):
+        """Pixel explosion: chunky squares flying out, a little gravity."""
+        at = L(fx["at"])
+        tau = u * fx["dur"]
+        if u < 0.3:
+            r = 20 + 260 * tau
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, int(200 * (1 - u / 0.3))), 4))
+            p.drawEllipse(at, r, r)
+        p.setPen(Qt.PenStyle.NoPen)
+        for ang, sp, col, sz in fx["bits"]:
+            x = at.x() + math.cos(ang) * sp * tau
+            y = at.y() + math.sin(ang) * sp * tau + 220 * tau * tau
+            c = QColor(col)
+            c.setAlphaF(max(0.0, 1 - u))
+            p.fillRect(QRectF(x - sz / 2, y - sz / 2, sz, sz), c)
+            p.fillRect(QRectF(x - sz / 2, y - sz / 2, sz, max(1.0, sz * 0.3)),
+                       QColor(255, 255, 255, int(150 * (1 - u))))
+
+    def fx_beam(self, p, fx, u, L):
+        """She charges a shot in her gauntlet and fires a beam at the target."""
+        o = L(self.hand_global())
+        t = L(fx["target"])
+        if u < 0.25:  # charging orb with pixels being pulled in
+            v = u / 0.25
+            self.paint_flash(p, o.x(), o.y(), 8 + 26 * v, 0.6 + 0.4 * v)
+            rng = random.Random(int(self.t * 30))
+            p.setPen(Qt.PenStyle.NoPen)
+            for _ in range(10):
+                a, r = rng.uniform(0, 2 * math.pi), (1 - v) * 60 + rng.uniform(0, 20)
+                p.fillRect(QRectF(o.x() + math.cos(a) * r, o.y() + math.sin(a) * r, 4, 4), rng.choice(CUBE_COLORS))
+            return
+        fade = 1.0 if u < 0.8 else max(0.0, 1 - (u - 0.8) / 0.2)
+        th = 9 * (1 + 0.25 * math.sin(self.t * 40))
+        for col, wd, al in ((PINK, 2.6, 90), (CYAN, 1.4, 180), (QColor("#ffffff"), 0.5, 255)):
+            c = QColor(col)
+            c.setAlpha(int(al * fade))
+            p.setPen(QPen(c, th * wd, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(o, t)
+        rng = random.Random(int(self.t * 25))
+        p.setPen(Qt.PenStyle.NoPen)
+        for _ in range(14):  # pixels shed along the beam
+            s = rng.random()
+            x, y = o.x() + (t.x() - o.x()) * s, o.y() + (t.y() - o.y()) * s
+            c = QColor(rng.choice(CUBE_COLORS))
+            c.setAlphaF(fade * 0.9)
+            p.fillRect(QRectF(x + rng.uniform(-14, 14), y + rng.uniform(-14, 14), 5, 5), c)
+        self.paint_flash(p, o.x(), o.y(), 22, fade)
+        self.paint_flash(p, t.x(), t.y(), 40, fade)
+
+    def fx_slash(self, p, fx, u, L):
+        """A big pixel-art sword swung in an arc (from her battle moves)."""
+        pivot = L(self.hand_global())
+        side = fx["side"]
+        a0, a1 = -125.0, 55.0
+        if u < 0.25:
+            e, grow = 0.0, u / 0.25
+        elif u < 0.55:
+            v = (u - 0.25) / 0.3
+            e, grow = 1 - (1 - v) ** 3, 1.0
+        else:
+            e, grow = 1.0, 1.0
+        fade = 1.0 if u < 0.7 else max(0.0, 1 - (u - 0.7) / 0.3)
+
+        def world_ang(a):
+            return a if side > 0 else 180 - a
+        cur = a0 + (a1 - a0) * e
+        length = 1.1 * self.img_h * (0.4 + 0.6 * grow)
+        cell = max(5.0, self.img_h / 34)
+        # pixel arc left behind by the swing
+        if 0.25 <= u:
+            p.setPen(Qt.PenStyle.NoPen)
+            steps = int(abs(cur - a0) / 4)
+            for i in range(steps):
+                a = math.radians(world_ang(a0 + (cur - a0) * i / max(1, steps)))
+                for rr in (0.62, 0.78, 0.92):
+                    c = QColor(PINK if rr > 0.9 else CYAN)
+                    c.setAlphaF(fade * 0.55 * (i / max(1, steps)))
+                    x = pivot.x() + math.cos(a) * length * rr
+                    y = pivot.y() + math.sin(a) * length * rr
+                    p.fillRect(QRectF(x - cell / 2, y - cell / 2, cell, cell), c)
+        # afterimages, then the sword
+        if 0.25 <= u < 0.6:
+            for i in (3, 2, 1):
+                self.draw_pixel_sword(p, pivot, world_ang(cur - (a1 - a0) * 0.06 * i), length, cell, fade * 0.18 * (4 - i))
+        self.draw_pixel_sword(p, pivot, world_ang(cur), length, cell, fade)
+
+    @staticmethod
+    def draw_pixel_sword(p, pivot, ang, length, cell, alpha):
+        if alpha <= 0:
+            return
+        n = max(8, int(length / cell))
+        p.save()
+        p.translate(pivot)
+        p.rotate(ang)
+        p.setOpacity(alpha)
+        p.setPen(Qt.PenStyle.NoPen)
+        handle, guard = QColor(58, 29, 92), CYAN
+        for i in range(n):
+            x = i * cell
+            if i < 2:  # handle
+                p.fillRect(QRectF(x, -cell / 2, cell, cell), handle)
+            elif i == 2:  # cross-guard
+                p.fillRect(QRectF(x, -cell * 2.5, cell, cell * 5), guard)
+            else:
+                taper = 1 if i >= n - 2 else 3
+                for row in range(-(taper // 2), taper // 2 + 1):
+                    if i == n - 1:
+                        col = PINK
+                    elif row == 0:
+                        col = QColor("#ffffff")
+                    else:
+                        col = QColor(94, 242, 255)
+                    p.fillRect(QRectF(x, row * cell - cell / 2, cell + 0.5, cell + 0.5), col)
+        p.restore()
+
+    def fx_win(self, p, fx, u, L):
+        """YOU WIN, big and pixelated, from her Elation skill."""
+        if self.fxl is None:
+            return
+        img = self.win_text_image()
+        W, H = self.fxl.width(), self.fxl.height()
+        s = min(W * 0.6 / img.width(), 12.0)
+        if u < 0.12:
+            s *= 0.3 + 0.9 * (u / 0.12)
+        elif u < 0.2:
+            s *= 1.2 - 0.2 * ((u - 0.12) / 0.08)
+        a = 1.0 if u < 0.8 else max(0.0, 1 - (u - 0.8) / 0.2)
+        w, h = img.width() * s, img.height() * s
+        x, y = W / 2 - w / 2, H * 0.42 - h / 2
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        p.setOpacity(a)
+        rng = random.Random(int(self.t * 12))
+        glitch = rng.random() < 0.25
+        # glitch copies
+        p.setOpacity(a * 0.5)
+        p.drawImage(QRectF(x - 6, y, w, h), self.win_text_image(CYAN))
+        p.drawImage(QRectF(x + 6, y, w, h), self.win_text_image(PINK))
+        p.setOpacity(a)
+        if glitch:  # a few sliced rows shifted sideways
+            rows = img.height()
+            for r in range(rows):
+                dx = rng.choice((0, 0, 0, rng.uniform(-18, 18)))
+                p.drawImage(QRectF(x + dx, y + r * s, w, s), img, QRectF(0, r, img.width(), 1))
+        else:
+            p.drawImage(QRectF(x, y, w, h), img)
+        f = QFont("Source Code Pro")
+        f.setPixelSize(max(14, int(s * 2.2)))
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#e8e6ff"))
+        p.drawText(QRectF(0, y + h + 6, W, s * 4), Qt.AlignmentFlag.AlignHCenter, "LV.999  ·  SCORE 999,999,999")
+        p.restore()
+
+    def win_text_image(self, solid=None):
+        """'YOU WIN' rendered tiny without antialiasing, so scaling it up keeps it pixelated."""
+        key = "win" if solid is None else solid.name()
+        cache = self.__dict__.setdefault("_win_imgs", {})
+        if key in cache:
+            return cache[key]
+        f = QFont("Source Code Pro")
+        f.setPixelSize(13)
+        f.setBold(True)
+        f.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
+        fm = QFontMetrics(f)
+        img = QImage(fm.horizontalAdvance("YOU WIN") + 4, fm.height() + 2, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        q = QPainter(img)
+        q.setFont(f)
+        q.setPen(QColor("#ffffff"))
+        q.drawText(QPointF(2, fm.ascent() + 1), "YOU WIN")
+        q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        if solid is None:
+            g = QLinearGradient(0, 0, img.width(), img.height())
+            g.setColorAt(0, CYAN)
+            g.setColorAt(0.5, QColor("#ffffff"))
+            g.setColorAt(1, PINK)
+            q.fillRect(img.rect(), g)
+            q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+            for yy in range(0, img.height(), 2):  # scanlines
+                q.fillRect(0, yy, img.width(), 1, QColor(0, 0, 0, 40))
+        else:
+            q.fillRect(img.rect(), solid)
+        q.end()
+        cache[key] = img
+        return img
+
     def paint_godmode_bar(self, p, cx, sy, left):
         """Segmented retro bar under her feet showing how much godmode is left."""
         segs = 10
@@ -1706,6 +2209,7 @@ class Companion(QWidget):
                     self.say("drag", cooldown=30)
                 self.drag_moved = True
             if self.drag_moved:
+                self.fly = None  # grabbing her mid-flight stops the flight
                 self.move(g - self.drag_off)
                 self.fpos = None
                 self.wander_target = None
