@@ -65,8 +65,8 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "digital": 1.4, "derez": 1.0, "insert": 0.9, "visor": 1.1,
-           "eject": 0.7, "rerez": 0.9}
+PHASE_T = {"cart": 0.9, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
+           "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
@@ -76,7 +76,7 @@ FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0
 DEFAULTS = dict(height=300, opacity=1.0, wander=False, glitch=True,
                 particles=True, click_through=False, mirror=False,
                 speech=True, reactions=True, sounds=True, sleepy_hours=[0, 6],
-                exp=0, level=1, sw999_seconds=12, sw999_auto=True, sw999_play=False,
+                exp=0, level=1, sw999_seconds=30, sw999_auto=True, sw999_play=False,
                 image_index=0, x=None, y=None)
 
 # ------------------------------------------------------------------ lines
@@ -130,6 +130,13 @@ LINES = {
     "net_up": ["Back online. Reconnected to the server.", "Link restored. Ping me."],
     "drive": ["New drive detected: {name}. Let's see what's inside.", "USB loot: {name}. Plugged in.",
               "{name} mounted. Treasure chest opened."],
+    # LV.999 moments. tools/make_sw999_lines.py swaps in her real voice lines
+    # (kept locally in forms/sw999_lines.json).
+    "sw999_hello": ["LV.999, loaded. Let's play.", "Final form, online. Try to keep up."],
+    "sw999_idle": ["Max level and nothing to fight. Boring.", "This save file is mine now.",
+                   "Want me to one-shot your inbox?", "Boop me a few times. I dare you."],
+    "sw999_godoff": ["GG.", "Too easy."],
+    "sw999_loot": ["Ooh, loot.", "Drop rates are rigged."],
     "sw999_on": ["Godmode: on. Try to keep up.", "Cartridge loaded. This save file is mine now.",
                  "LV.999. Don't blink.", "Player two has entered the game. ...She's also me."],
     "sw999_boop": ["Godmode. Your clicks deal 0 damage.", "Access denied.", "Input ignored. I'm busy being OP."],
@@ -148,6 +155,17 @@ SOUND_FOR = {
 # sounds still allowed during sleepy hours (idle chatter blips stay quiet)
 NIGHT_SOUNDS = {"warn", "offline", "boop", "pop", "levelup", "loot",  # you clicked or it matters
                 "cart", "transform", "godmode", "revert", "eject"}
+
+
+def load_local_lines():
+    """Her real LV.999 voice lines, if tools/make_sw999_lines.py has made them."""
+    try:
+        extra = json.loads((HERE / "forms" / "sw999_lines.json").read_text())
+    except Exception:
+        return
+    for key, lines in extra.items():
+        if isinstance(lines, list) and lines:
+            LINES[key] = [str(x).replace("{", "{{").replace("}", "}}") for x in lines]
 
 
 def load_cfg():
@@ -312,7 +330,7 @@ class Companion(QWidget):
         self.next_glitch = 2.0
         self.gum_t = None  # time the current gum bubble started
 
-        # SW999 transformation: phase is None | charge | swap | active | revert
+        # LV.999 transformation (see transform())
         self.form_phase = None
         self.form_t0 = 0.0
         self.form_static = self.form_movie = self.form_scaled = None
@@ -332,6 +350,14 @@ class Companion(QWidget):
         self.last_act = None
         self.form_cache = {}
         self.block_cache = {}
+        self.idle_src, self.idle_frames, self.idle_meta, self.idle_off = [], [], {}, (0, 0)
+        self.anim_t0 = 0.0
+        self.lv_until = 0.0
+        self.lv_pause = None
+        self.auto_god = None
+        self.next_lv_line = 0.0
+        self.wfx = []
+        self.lv_boops = []
 
         self.drag_off = None
         self.drag_moved = False
@@ -446,6 +472,7 @@ class Companion(QWidget):
         self.form_static = self.form_movie = self.form_scaled = None
         self.form_bare = self.form_bare_scaled = self.form_visor = self.form_visor_scaled = None
         self.form_meta = {}
+        self.idle_src, self.idle_frames = [], []
         self.form_cache.clear()
         self.block_cache.clear()
         if not FORM_DIR.is_dir():
@@ -476,6 +503,13 @@ class Companion(QWidget):
             self.form_meta = {}
         if not bare.isNull() and not visor.isNull() and "visor" in self.form_meta and "eyes" in self.form_meta:
             self.form_bare, self.form_visor = bare, visor
+        # her animated idle (tools/make_sw999_idle.py)
+        try:
+            self.idle_meta = json.loads((FORM_DIR / "sw999_idle.json").read_text())
+            files = sorted((FORM_DIR / "sw999_idle").glob("*.png"))
+            self.idle_src = [px for px in (QPixmap(str(p)) for p in files) if not px.isNull()]
+        except Exception:
+            self.idle_meta, self.idle_src = {}, []
 
     def scale_form_image(self):
         if not (self.form_movie or self.form_static):
@@ -499,6 +533,15 @@ class Companion(QWidget):
             vx, vy, vw, vh = self.form_meta["visor"]
             self.form_visor_scaled = self.form_visor.scaled(max(1, round(vw * fw)), max(1, round(vh * fh)),
                                                             ignore, smooth)
+        self.idle_frames = []
+        if self.idle_src and "body" in self.idle_meta:
+            # scale so her body matches the still art, feet on the same spot
+            W, H = self.idle_src[0].width(), self.idle_src[0].height()
+            bx, by, bw, bh = self.idle_meta["body"]
+            s = fh / (bh * H)
+            sw_, sh_ = max(1, round(W * s)), max(1, round(H * s))
+            self.idle_frames = [px.scaled(sw_, sh_, ignore, smooth) for px in self.idle_src]
+            self.idle_off = (self.img_w / 2 - (bx + bw / 2) * W * s, self.img_h - (by + bh) * H * s)
 
     def apply_size(self):
         h = max(80, min(1200, int(self.cfg["height"])))
@@ -805,6 +848,8 @@ class Companion(QWidget):
 
         self.update_form(dt)
         self.update_fx_layer()
+        if self.wfx:
+            self.update_wfx()
         self.update_particles(dt, sleepy)
         for f in self.floaters:
             f["life"] -= dt
@@ -823,7 +868,7 @@ class Companion(QWidget):
             self.gpu_acc = 0.0
             self.check_gpu()
 
-        if now >= self.next_idle:
+        if now >= self.next_idle and not self.form_phase:
             if (self.cfg.get("sw999_auto") and not sleepy and not self.form_phase
                     and random.random() < 0.08):
                 self.transform()  # rare surprise overclock (~every 30-60 min)
@@ -957,13 +1002,14 @@ class Companion(QWidget):
 
     # ---------- SW999 transformation ----------
     # LV.999 is her future self, sealed inside a game cartridge (Elio keeps it).
-    # Follows her in-game transformation:
-    #   cart     cartridge tossed in, hovers    digital  circuit-board world
+    #   cart     cartridge tossed in, hovers     digital  circuit-board world
     #   derez    the chibi breaks into pixels and re-forms full size
     #   insert   the cartridge slots into her gauntlet, gems light up, crystals burst
-    #   visor    she pulls her visor down and it becomes the godmode shades
-    #   active   godmode: wings of light, and she plays around the screen
-    #   eject    cartridge pops out of the gauntlet   rerez  pixels back to chibi
+    #   settle   -> lv999: her animated idle as LV.999 (visor up on her head)
+    #   godmode, her ultimate, from lv999 (auto once, or boop her 3x):
+    #     visor (pulls it down into the shades) -> active (wings of light,
+    #     boops open a Top Loot Box) -> godoff (wings shatter) -> lv999
+    #   unsettle -> eject (cartridge pops out) -> rerez (back to chibi)
     def transform(self):
         if self.form_phase or not self.isVisible():
             return
@@ -983,8 +1029,24 @@ class Companion(QWidget):
             self.start_glitch(0.2)
         elif ph == "derez":
             self.set_phase("rerez")
-        elif ph in ("insert", "visor", "active"):
-            self.set_phase("eject")
+        elif ph in ("insert", "settle", "lv999"):
+            self.set_phase("unsettle")
+        elif ph in ("visor", "active"):
+            self.lv_until = self.t  # finish godmode, then leave
+            self.lv_pause = None
+            self.set_phase("godoff")
+        elif ph == "godoff":
+            self.lv_until = self.t
+            self.lv_pause = None
+
+    def godmode(self):
+        """Her ultimate: only from her LV.999 idle."""
+        if self.form_phase == "lv999" and self.has_form_art() and self.form_bare_scaled is not None:
+            self.lv_pause = self.t
+            self.set_phase("visor")
+
+    def lv999_seconds(self):
+        return max(15.0, float(self.cfg.get("sw999_seconds", 30)))
 
     def set_phase(self, ph):
         self.form_phase, self.form_t0 = ph, self.t
@@ -996,15 +1058,31 @@ class Companion(QWidget):
             self.start_glitch(0.15)
         elif ph == "insert":
             self.play("cart")
+        elif ph == "settle":
+            self.lv_until = self.t + PHASE_T["settle"] + self.lv999_seconds()
+            self.auto_god = self.t + PHASE_T["settle"] + 4.0  # one ultimate early on
+            self.anim_t0 = self.t
+            self.next_lv_line = self.t + 9.0
+            self.say("sw999_hello", force=True)
+        elif ph == "visor":
+            self.say("sw999_on", force=True)
         elif ph == "active":
             self.floaters.append(dict(text="GODMODE", x=self.width() / 2 - 62, y=PAD - 20, vy=-14,
                                       life=2.0, max=2.0, color=PINK, size=20, big=True))
-            self.say("sw999_on", force=True)
             if self.cfg.get("sw999_play"):
                 self.start_godmode()
+        elif ph == "godoff":
+            self.play("revert")
+            self.shatter_wings()
+            if self.fly is not None or (self.fxl is not None and self.fxl.isVisible()):
+                self.end_godmode()
+        elif ph == "lv999":
+            if self.lv_pause is not None:  # back from godmode, which doesn't eat LV.999 time
+                self.lv_until += self.t - self.lv_pause
+                self.lv_pause = None
+                self.say("sw999_godoff", force=True)
         elif ph == "eject":
             self.play("eject")
-            self.end_godmode()
         elif ph == "rerez":
             self.play("revert")
             self.start_glitch(0.2)
@@ -1013,7 +1091,10 @@ class Companion(QWidget):
         """(phase, 0..1 progress through it)."""
         if not self.form_phase:
             return None, 0.0
-        dur = PHASE_T.get(self.form_phase) or max(6.0, float(self.cfg.get("sw999_seconds", 12)))
+        if self.form_phase == "lv999":
+            span = max(0.001, self.lv_until - self.form_t0)
+            return "lv999", max(0.0, min(1.0, (self.t - self.form_t0) / span))
+        dur = PHASE_T[self.form_phase]
         return self.form_phase, max(0.0, min(1.0, (self.t - self.form_t0) / dur))
 
     def form_amount(self):
@@ -1022,15 +1103,15 @@ class Companion(QWidget):
         if ph == "active":
             u = min(1.0, (self.t - self.form_t0) / 0.7)
             return 1 - (1 - u) ** 3
-        if ph == "eject":
-            return max(0.0, 1 - k)
+        if ph == "godoff":
+            return max(0.0, 1 - k * 3)
         return 0.0
 
     def body_is_form(self):
         """Is the full-size LV.999 body what's on screen right now?"""
         ph, k = self.form_progress()
-        return ph in ("insert", "visor", "active", "eject") or (ph == "derez" and k >= 0.5) \
-            or (ph == "rerez" and k < 0.5)
+        return ph in ("insert", "settle", "lv999", "visor", "active", "godoff", "unsettle", "eject") \
+            or (ph == "derez" and k >= 0.5) or (ph == "rerez" and k < 0.5)
 
     def update_form(self, dt):
         ph, k = self.form_progress()
@@ -1050,12 +1131,25 @@ class Companion(QWidget):
             self.play("godmode")
             for _ in range(24):
                 self.spawn_cube(burst=True)
+        if ph == "lv999":
+            if self.auto_god and self.t >= self.auto_god:
+                self.auto_god = None
+                self.godmode()
+                return
+            if self.t >= self.next_lv_line:
+                if self.say("sw999_idle"):
+                    self.next_lv_line = self.t + random.uniform(10, 18)
+                else:
+                    self.next_lv_line = self.t + 2
         if ph == "active" and self.fxl is not None and self.fxl.isVisible():
             self.update_godmode(dt, k)
         if k < 1:
             return
-        nxt = {"cart": "digital", "digital": "derez", "derez": "insert", "insert": "visor",
-               "visor": "active", "active": "eject", "eject": "rerez"}.get(ph)
+        nxt = {"cart": "digital", "digital": "derez", "derez": "insert", "insert": "settle",
+               "settle": "lv999", "visor": "active", "active": "godoff", "lv999": "unsettle",
+               "unsettle": "eject", "eject": "rerez"}.get(ph)
+        if ph == "godoff":
+            nxt = "lv999" if self.t < self.lv_until else "unsettle"
         if nxt:
             self.set_phase(nxt)
             return
@@ -1064,19 +1158,75 @@ class Companion(QWidget):
             self.form_movie.stop()
         self.say("sw999_off", force=True)
 
-    def spawn_cube(self, burst=False):
+    def spawn_cube(self, burst=False, at=None, colors=None, speed=(60, 160)):
         """The floating yellow / pink / cyan / lavender cubes from her transformation."""
-        if burst:
-            x, y = self.width() / 2 + random.uniform(-20, 20), PAD + self.img_h * 0.25
-            ang, sp = random.uniform(0, 2 * math.pi), random.uniform(60, 160)
+        if burst or at:
+            x, y = at if at else (self.width() / 2 + random.uniform(-20, 20), PAD + self.img_h * 0.25)
+            ang, sp = random.uniform(0, 2 * math.pi), random.uniform(*speed)
             vx, vy = math.cos(ang) * sp, math.sin(ang) * sp
         else:
             x, y = random.uniform(8, self.width() - 8), random.uniform(PAD * 0.5, self.height() - 10)
             vx, vy = random.uniform(-8, 8), random.uniform(-45, -15)
         life = random.uniform(0.9, 2.0)
         self.particles.append(dict(x=x, y=y, vx=vx, vy=vy, life=life, max=life, kind="cube",
-                                   color=random.choice(CUBE_COLORS), ch="", size=random.choice((4, 5, 6, 8)),
-                                   blink=random.uniform(3, 7)))
+                                   color=random.choice(colors or CUBE_COLORS), ch="",
+                                   size=random.choice((4, 5, 6, 8)), blink=random.uniform(3, 7)))
+
+    def local_to_window(self, lx, ly):
+        m = -1 if self.cfg["mirror"] else 1
+        return self.width() / 2 + m * (lx - self.img_w / 2), PAD + self.img_h / 2 + self.lift() + (ly - self.img_h / 2)
+
+    def shatter_wings(self):
+        """God Mode OFF: her wings of light break apart into pixels."""
+        rx, ry = self.local_to_window(*self.wing_root())
+        for _ in range(70):
+            side = random.choice((-1, 1))
+            a = math.radians(random.uniform(-40, 30))
+            d = random.uniform(10, 150)
+            x, y = rx + side * math.cos(a) * d, ry + math.sin(a) * d
+            sp = random.uniform(20, 90)
+            life = random.uniform(0.6, 1.4)
+            self.particles.append(dict(x=x, y=y, vx=side * math.cos(a) * sp, vy=math.sin(a) * sp - 20,
+                                       life=life, max=life, kind="cube", ch="", blink=random.uniform(3, 8),
+                                       color=random.choice((PINK, CYAN, QColor("#ffffff"), QColor("#e6dcff"))),
+                                       size=random.choice((3, 4, 5, 6))))
+
+    # ---------- Top Loot Box: godmode boops (from her ultimate's card text) ----------
+    def open_loot_box(self):
+        kind = random.choice(("sword", "egg", "bean"))
+        self.wfx = [w for w in self.wfx if self.t - w["t0"] < w["dur"]][-2:]
+        x = self.width() / 2 + random.choice((-1, 1)) * self.img_w * random.uniform(0.3, 0.4)
+        y = PAD + self.img_h * random.uniform(0.25, 0.45)
+        self.wfx.append(dict(kind=kind, t0=self.t, dur=1.4, x=x, y=y, popped=False))
+        self.play("loot")
+        name = {"sword": "BIG FLIPPING SWORD", "egg": "KABOOM EGGSPLOSION", "bean": "FUNKY MUNCH BEAN"}[kind]
+        f = QFont("Source Code Pro")
+        f.setPixelSize(11)
+        f.setBold(True)
+        tw = QFontMetrics(f).horizontalAdvance(name)
+        self.floaters.append(dict(text=name, x=max(2, min(self.width() - tw - 2, x - tw / 2)), y=y - 26, vy=-18,
+                                  life=1.5, max=1.5, color=GOLD, size=11))
+        if random.random() < 0.3:
+            self.say("sw999_loot", cooldown=8)
+
+    def update_wfx(self):
+        for w in self.wfx:
+            u = (self.t - w["t0"]) / w["dur"]
+            if not w["popped"] and u >= 0.6:
+                w["popped"] = True
+                if w["kind"] == "egg":
+                    self.play("boom")
+                    for _ in range(26):
+                        self.spawn_cube(at=(w["x"], w["y"]), colors=BOOM_COLORS, speed=(40, 140))
+                elif w["kind"] == "sword":
+                    self.play("slash")
+                    for _ in range(12):
+                        self.spawn_cube(at=(w["x"], w["y"] + self.img_h * 0.25), colors=SW999_COLORS, speed=(30, 100))
+                else:
+                    self.play("pop")
+                    self.floaters.append(dict(text="+Punchline", x=w["x"] - 30, y=w["y"] - 8, vy=-30,
+                                              life=1.0, max=1.0, color=QColor("#7dff9a"), size=12))
+        self.wfx = [w for w in self.wfx if self.t - w["t0"] < w["dur"]]
 
     # ---------- godmode: she plays around the whole screen ----------
     def start_godmode(self):
@@ -1153,7 +1303,7 @@ class Companion(QWidget):
         # next move
         if self.fly or now < self.next_act or self.drag_off is not None:
             return
-        left = (1 - k) * max(6.0, float(self.cfg.get("sw999_seconds", 12)))
+        left = (1 - k) * PHASE_T["active"]
         if not self.won and left < 3.4:
             if math.hypot(self.x() - self.home.x(), self.y() - self.home.y()) > 30:
                 self.fly_to(self.home)  # head home for the finale
@@ -1325,7 +1475,7 @@ class Companion(QWidget):
             if phase == "insert" and fk >= INSERT_HIT:  # crystals burst as the cartridge locks in
                 self.paint_crystal_burst(p, (fk - INSERT_HIT) / (1 - INSERT_HIT))
 
-            bare = art and self.form_bare_scaled is not None and phase in ("visor", "active", "eject", "rerez")
+            bare = art and self.form_bare_scaled is not None and phase in ("visor", "active", "godoff")
             if phase == "derez":
                 if fk < 0.5:
                     self.paint_blocks(p, pix, 0, 0, fk * 2, gathering=False)
@@ -1336,7 +1486,11 @@ class Companion(QWidget):
                     self.paint_blocks(p, *self.form_sprite(pix, bare), fk * 2, gathering=False)
                 else:
                     self.paint_blocks(p, pix, 0, 0, fk * 2 - 1, gathering=True)
-            elif phase in ("insert", "visor", "active", "eject"):
+            elif phase in ("insert", "eject"):
+                self.draw_pix(p, *self.form_sprite(pix), glitching)
+            elif phase in ("settle", "unsettle", "lv999", "visor", "godoff"):
+                self.paint_lv999_body(p, phase, fk, pix, self.idle_frame() if art else None, glitching)
+            elif phase == "active":
                 form, ox, oy = self.form_sprite(pix, bare)
                 self.paint_aura(p, form, ox, oy)
                 self.draw_pix(p, form, ox, oy, glitching)
@@ -1357,6 +1511,8 @@ class Companion(QWidget):
             self.paint_pixel_scan(p, fk)
         elif phase == "active":
             self.paint_godmode_bar(p, fx, sy, 1 - fk)
+        if self.wfx:
+            self.paint_wfx(p)
 
         self.paint_gum(p, lift)
         self.paint_particles(p)
@@ -1505,9 +1661,48 @@ class Companion(QWidget):
             p.drawPolygon(poly)
         p.restore()
 
+    def idle_frame(self):
+        """Current frame of her LV.999 idle animation, with its local offset."""
+        if not self.idle_frames:
+            return None
+        i = int((self.t - self.anim_t0) * 1000 / max(20, self.idle_meta.get("frame_ms", 100))) % len(self.idle_frames)
+        return self.idle_frames[i], self.idle_off[0], self.idle_off[1]
+
+    def paint_lv999_body(self, p, phase, k, pix, idle, glitching):
+        """Her full-size body, crossfading between the still art (needed for the
+        visor / shades / gauntlet moments) and the idle animation."""
+        still = self.form_sprite(pix)
+        bare = self.form_sprite(pix, True)
+        anim = idle or still
+
+        def draw(sprite, a, aura=False):
+            if a <= 0:
+                return
+            p.save()
+            p.setOpacity(p.opacity() * a)
+            if aura:
+                self.paint_aura(p, *sprite)
+            self.draw_pix(p, *sprite, glitching)
+            p.restore()
+        if phase == "settle":
+            draw(still, 1 - k)
+            draw(anim, k)
+        elif phase == "unsettle":
+            draw(anim, 1 - k)
+            draw(still, k)
+        elif phase == "lv999":
+            draw(anim, 1)
+        elif phase == "visor":
+            draw(bare, 1, aura=k > 0.45)
+            draw(anim, max(0.0, 1 - k / 0.15))
+        elif phase == "godoff":
+            u = max(0.0, (k - 0.65) / 0.35)
+            draw(bare, 1 - u, aura=k < 0.15)
+            draw(anim, u)
+
     def paint_visor_and_shades(self, p, phase, k):
-        """Her visor slides down from her head onto her eyes and turns into the
-        big godmode shades (as in her transformation), then stays as shades."""
+        """Her visor slides down from her head and turns into the godmode
+        shades; when godmode ends the shades turn back and it goes back up."""
         vx, vy, vw, vh = self.form_meta["visor"]
         ex, ey, ew = self.form_meta["eyes"]
         hx, hy = self.form_point(vx + vw / 2, vy + vh / 2)
@@ -1515,30 +1710,114 @@ class Companion(QWidget):
         art, _, _ = self.form_sprite(self.frame(), True)
         width = ew * art.width()
         visor = self.form_visor_scaled
-        if phase == "visor":
-            if k < 0.45:  # pull it down over her eyes
-                u = k / 0.45
-                u = u * u * (3 - 2 * u)
-                x, y = hx + (tx - hx) * u, hy + (ty - hy) * u
-                p.save()
-                p.translate(x, y)
-                p.rotate(math.sin(u * math.pi) * -8)
-                p.drawPixmap(QPointF(-visor.width() / 2, -visor.height() / 2), visor)
-                p.restore()
+
+        def visor_at(u, alpha):  # u: 0 = on her head, 1 = over her eyes
+            if alpha <= 0:
                 return
-            u = min(1.0, (k - 0.45) / 0.25)  # morph: visor fades, shades grow out of it
-            if u < 1:
-                p.save()
-                p.setOpacity(1 - u)
-                p.drawPixmap(QPointF(tx - visor.width() / 2, ty - visor.height() / 2), visor)
-                p.restore()
+            e = u * u * (3 - 2 * u)
+            p.save()
+            p.setOpacity(p.opacity() * alpha)
+            p.translate(hx + (tx - hx) * e, hy + (ty - hy) * e)
+            p.rotate(math.sin(e * math.pi) * -8)
+            p.drawPixmap(QPointF(-visor.width() / 2, -visor.height() / 2), visor)
+            p.restore()
+        if phase == "visor":
+            if k < 0.45:
+                visor_at(k / 0.45, 1)
+                return
+            u = min(1.0, (k - 0.45) / 0.25)
+            visor_at(1, 1 - u)
             self.paint_flash(p, tx, ty, width * 1.6, 1 - abs(u * 2 - 1))
             self.draw_shades(p, tx, ty, width, 0.55 + 0.45 * u, u, sparkle=1.0 - 0.6 * min(1.0, (k - 0.45) / 0.55))
-        elif phase in ("active", "eject"):
+        elif phase == "active":
             sp = max(0.0, math.sin(self.t * 1.3)) ** 12  # an occasional glint
             self.draw_shades(p, tx, ty, width, 1.0, 1.0, sparkle=0.4 * sp)
-        elif phase == "rerez" and k < 0.5:
-            self.draw_shades(p, tx, ty, width, 1.0, 1 - k * 2, sparkle=0)
+        elif phase == "godoff":
+            if k < 0.15:
+                u = k / 0.15
+                self.paint_flash(p, tx, ty, width * 1.4, 1 - u)
+                self.draw_shades(p, tx, ty, width, 1.0, 1 - u)
+                visor_at(1, u)
+            elif k < 0.65:
+                visor_at(1 - (k - 0.15) / 0.5, 1)
+            else:
+                visor_at(0, 1 - (k - 0.65) / 0.35)
+
+    def paint_wfx(self, p):
+        """Top Loot Box drops, drawn in her window."""
+        for w in self.wfx:
+            u = (self.t - w["t0"]) / w["dur"]
+            x, y = w["x"], w["y"]
+            fade = 1.0 if u < 0.8 else max(0.0, 1 - (u - 0.8) / 0.2)
+            p.save()
+            p.setOpacity(fade)
+            if u < 0.35:  # the box pops open
+                self.draw_loot_box(p, x, y + 10, min(1.0, u / 0.2))
+            v = max(0.0, (u - 0.2) / 0.4)
+            if u >= 0.2:
+                kind = w["kind"]
+                if kind == "sword":
+                    cell = max(3.0, self.img_h / 60)
+                    if u < 0.6:  # flips up out of the box
+                        self.draw_pixel_sword(p, QPointF(x, y - v * 22), -90 + v * 720, self.img_h * 0.32, cell, 1.0)
+                    else:  # and slams down point-first
+                        self.draw_pixel_sword(p, QPointF(x, y - 10), 90, self.img_h * 0.32, cell, 1.0)
+                elif kind == "egg" and u < 0.6:
+                    self.draw_egg(p, x, y - v * 18, v)
+                elif kind == "bean" and u < 0.6:
+                    self.draw_bean(p, x, y - abs(math.sin(v * math.pi * 2)) * 16)
+            p.restore()
+
+    @staticmethod
+    def draw_loot_box(p, x, y, open_):
+        s = 3.0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.fillRect(QRectF(x - 6 * s, y - 4 * s, 12 * s, 8 * s), QColor(58, 29, 92))
+        p.fillRect(QRectF(x - 6 * s, y - 4 * s, 12 * s, s), GOLD)
+        p.fillRect(QRectF(x - s, y - 4 * s, 2 * s, 8 * s), GOLD)
+        p.save()  # lid tips open
+        p.translate(x - 6 * s, y - 4 * s)
+        p.rotate(-70 * open_)
+        p.fillRect(QRectF(0, -3 * s, 12 * s, 3 * s), QColor(80, 44, 124))
+        p.fillRect(QRectF(5 * s, -3 * s, 2 * s, 3 * s), GOLD)
+        p.restore()
+        if open_ > 0.3:  # light spilling out
+            g = QRadialGradient(x, y - 5 * s, 14 * s)
+            g.setColorAt(0, QColor(255, 240, 180, int(200 * open_)))
+            g.setColorAt(1, QColor(255, 211, 107, 0))
+            p.setBrush(g)
+            p.drawEllipse(QPointF(x, y - 5 * s), 14 * s, 14 * s)
+
+    @staticmethod
+    def draw_egg(p, x, y, v):
+        wob = math.sin(v * 30) * 8 * v
+        p.save()
+        p.translate(x, y)
+        p.rotate(wob)
+        p.setPen(QPen(QColor(60, 40, 60), 1.5))
+        p.setBrush(QColor(255, 246, 228))
+        p.drawEllipse(QPointF(0, 0), 9, 12)
+        p.setPen(Qt.PenStyle.NoPen)
+        for dx, dy, c in ((-4, -4, PINK), (3, 1, CYAN), (-2, 5, QColor("#ffe066"))):
+            p.fillRect(QRectF(dx - 1.5, dy - 1.5, 3, 3), c)
+        if v > 0.7:  # cracking
+            p.setPen(QPen(QColor(60, 40, 60), 1.4))
+            p.drawPolyline(QPolygonF([QPointF(-8, -1), QPointF(-4, 2), QPointF(-1, -2), QPointF(3, 2), QPointF(8, -1)]))
+        p.restore()
+
+    @staticmethod
+    def draw_bean(p, x, y):
+        p.save()
+        p.translate(x, y)
+        p.rotate(-20)
+        p.setPen(QPen(QColor(20, 70, 30), 1.4))
+        p.setBrush(QColor(125, 255, 154))
+        p.drawRoundedRect(QRectF(-6, -9, 12, 18), 6, 6)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(20, 40, 25))
+        p.drawEllipse(QPointF(-2.2, -2), 1.3, 1.6)
+        p.drawEllipse(QPointF(2.2, -2), 1.3, 1.6)
+        p.restore()
 
     @staticmethod
     def paint_flash(p, x, y, r, a):
@@ -1631,7 +1910,7 @@ class Companion(QWidget):
         return self.img_w * 0.7, -PAD * 0.3 + math.sin(self.t * 2.2) * 4
 
     def paint_cartridge(self, p, phase, k):
-        if phase not in ("cart", "digital", "derez", "insert", "visor", "active", "eject"):
+        if phase not in ("cart", "digital", "derez", "insert", "eject"):
             return
         hx, hy = self.cart_hover_pt()
         gx, gy = self.gauntlet_pt()
@@ -2238,16 +2517,19 @@ class Companion(QWidget):
         now = time.monotonic()
         self.combo = self.combo + 1 if now - self.last_boop < 2.0 else 1
         self.last_boop = now
-        self.jump_v = -380
+        self.jump_v = -200 if self.body_is_form() else -380  # full-size her only hops a little
         self.play("boop")
         if self.gum_t is None and not self.form_phase and self.cur_file and self.cur_file.name in GUM_POS:
             self.gum_t = self.t
-        if self.form_phase == "active":  # godmode: every boop is a 999 crit
-            self.floaters.append(dict(text="999!", x=PAD + self.img_w * 0.55 + random.uniform(-14, 14),
-                                      y=PAD + self.img_h * 0.3, vy=-55, life=0.9, max=0.9,
-                                      color=PINK, size=17, big=True))
-            for _ in range(8):
-                self.spawn_particle(burst=True, colors=SW999_COLORS)
+        if self.form_phase == "active":  # godmode: every boop opens a Top Loot Box
+            self.open_loot_box()
+        elif self.form_phase == "lv999":  # three quick boops: godmode
+            self.lv_boops = [b for b in self.lv_boops if now - b < 2.0] + [now]
+            if len(self.lv_boops) >= 3:
+                self.lv_boops = []
+                self.godmode()
+            else:
+                self.say("sw999_boop", cooldown=5)
         else:
             self.floaters.append(dict(text="+1 EXP", x=PAD + self.img_w * 0.62 + random.uniform(-10, 10),
                                       y=PAD + self.img_h * 0.3, vy=-45, life=1.0, max=1.0,
@@ -2255,8 +2537,8 @@ class Companion(QWidget):
         leveled = self.add_exp(1)
         if self.combo == 10 and not self.form_phase:
             self.transform()  # rapid booping overclocks her
-        elif self.form_phase == "active" and not leveled:
-            self.say("sw999_boop", cooldown=5)
+        elif self.form_phase and not leveled:
+            pass
         elif not leveled:
             if self.is_sleepy():
                 self.say("sleep_boop", cooldown=8)
@@ -2290,15 +2572,17 @@ class Companion(QWidget):
         m.addAction("Say something", lambda: self.say("night" if self.is_sleepy() else "idle", force=True))
         m.addSeparator()
         if self.form_phase:
+            if self.form_phase == "lv999" and self.form_bare_scaled is not None:
+                m.addAction("Godmode!  (or boop her 3x)", self.godmode)
             m.addAction("Eject cartridge (back to Lv.{})".format(self.cfg["level"]), self.revert)
         else:
             m.addAction("Insert cartridge: LV.999  (or boop 10x fast)", self.transform)
         toggle("Surprise LV.999 transformations", "sw999_auto")
         toggle("Godmode: fly around and attack (experimental)", "sw999_play")
-        dur = m.addMenu("Godmode duration")
-        for secs in (8, 12, 20, 30, 60):
+        dur = m.addMenu("LV.999 duration")
+        for secs in (20, 30, 60, 120, 300):
             a = QAction(f"{secs} s", dur, checkable=True)
-            a.setChecked(int(self.cfg.get("sw999_seconds", 12)) == secs)
+            a.setChecked(int(self.cfg.get("sw999_seconds", 30)) == secs)
             a.triggered.connect(lambda _=False, secs=secs: (self.cfg.__setitem__("sw999_seconds", secs), self.save()))
             dur.addAction(a)
         m.addSeparator()
@@ -2388,6 +2672,7 @@ class Companion(QWidget):
 
 
 def main():
+    load_local_lines()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     w = Companion()
