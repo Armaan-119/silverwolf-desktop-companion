@@ -5,7 +5,7 @@ Silver Wolf floating desktop companion.
   Left-drag ........ move her
   Click ............ boop: hop, bubblegum, +EXP (every 10 = level up)
   Double-click ..... next image in images/
-  Boop 10x fast .... transform into SW999 for a short while (also in the menu)
+  Boop 10x fast .... insert the LV.999 cartridge: godmode for a short while
   Scroll ........... resize
   Right-click ...... menu
 
@@ -61,9 +61,17 @@ GUM_POS = {"silverwolfchibi.png": (0.255, 0.625)}
 # the current image is generated.
 FORM_DIR = HERE / "forms"
 GOLD = QColor("#ffd36b")
-SW999_COLORS = [CYAN, QColor("#ffffff"), GOLD, VIOLET]
-CHARGE_T, SWAP_T, REVERT_T = 1.3, 0.55, 0.7  # seconds
-FORM_SCALE = 1.08
+SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink gradient
+# seconds per phase ("active" uses the sw999_seconds setting)
+PHASE_T = {"cart": 0.9, "insert": 0.3, "boot": 1.3, "derez": 1.0, "rerez": 0.9, "eject": 0.8}
+# Where things are on each image, as fractions of the image (x, y):
+#   slot = top of her handheld, screen = its screen, eyes = (x, y, width) of
+#   her visor, back = wing joint, waist = cape top, hip = tail root.
+# Images not listed still transform; the shades are skipped and the rest
+# uses rough defaults.
+FORM_ANCHORS = {"silverwolfchibi.png": dict(
+    slot=(0.17, 0.685), screen=(0.165, 0.73), eyes=(0.305, 0.57, 0.40),
+    back=(0.42, 0.56), waist=(0.44, 0.74), hip=(0.50, 0.86))}
 
 DEFAULTS = dict(height=300, opacity=1.0, wander=False, glitch=True,
                 particles=True, click_through=False, mirror=False,
@@ -122,13 +130,11 @@ LINES = {
     "net_up": ["Back online. Reconnected to the server.", "Link restored. Ping me."],
     "drive": ["New drive detected: {name}. Let's see what's inside.", "USB loot: {name}. Plugged in.",
               "{name} mounted. Treasure chest opened."],
-    "sw999_charge": ["Executing LV999.exe...", "sudo transform --level 999",
-                     "Hold on. Loading my endgame build.", "Overriding level cap..."],
-    "sw999_on": ["LV.999 unlocked. Admin privileges: granted.", "Overclock engaged. Try to keep up.",
-                 "Patch 999 applied. Reality is now read-only.", "Final form? This is just the beta."],
-    "sw999_boop": ["Touching an admin? Bold.", "Access denied.", "Input ignored. I'm busy being OP."],
-    "sw999_off": ["Overclock expired. Back to Lv.{level}.", "Cooldown. That build was too OP anyway.",
-                  "Rolling back the patch... see you later, 999."],
+    "sw999_on": ["Godmode: on. Try to keep up.", "Cartridge loaded. This save file is mine now.",
+                 "LV.999. Don't blink.", "Player two has entered the game. ...She's also me."],
+    "sw999_boop": ["Godmode. Your clicks deal 0 damage.", "Access denied.", "Input ignored. I'm busy being OP."],
+    "sw999_off": ["Ejecting. Elio can hold onto that.", "Godmode off. Back to Lv.{level}.",
+                  "That's enough. She was getting too comfy in there."],
 }
 
 # which sound each line plays (default: a short "speak" blip)
@@ -137,11 +143,11 @@ SOUND_FOR = {
     "battery_low": "warn", "battery_critical": "warn", "cpu_temp": "warn", "gpu_hot": "warn",
     "ram_high": "warn", "cpu_high": "glitch", "gpu_busy": "glitch",
     "charging": "online", "net_up": "online", "net_down": "offline",
-    "sw999_on": "glitch", "sw999_off": "speak",
+    "sw999_on": "speak", "sw999_off": "speak",
 }
 # sounds still allowed during sleepy hours (idle chatter blips stay quiet)
 NIGHT_SOUNDS = {"warn", "offline", "boop", "pop", "levelup", "loot",  # you clicked or it matters
-                "transform", "revert"}
+                "cart", "transform", "godmode", "revert", "eject"}
 
 
 def load_cfg():
@@ -290,6 +296,7 @@ class Companion(QWidget):
         self.form_static = self.form_movie = self.form_scaled = None
         self.form_src_size = QSize(1, 1)
         self.form_cache = {}
+        self.block_cache = {}
 
         self.drag_off = None
         self.drag_moved = False
@@ -455,6 +462,7 @@ class Companion(QWidget):
                     Qt.TransformationMode.SmoothTransformation)
         self.tint_cache.clear()
         self.form_cache.clear()
+        self.block_cache.clear()
         self.scale_form_image()
         old_center = self.geometry().center() if self.isVisible() else None
         self.setFixedSize(self.img_w + 2 * PAD, self.img_h + 2 * PAD)
@@ -799,7 +807,7 @@ class Companion(QWidget):
                                    ch=random.choice("zZ"), size=random.choice((12, 15, 18)), blink=2))
 
     def update_particles(self, dt, sleepy):
-        powered = self.form_phase in ("swap", "active")
+        powered = self.form_phase == "active"
         if self.cfg["particles"]:
             self.spawn_acc += dt * (12.0 if powered else 1.5 if sleepy else 5.0)
             while self.spawn_acc >= 1 and len(self.particles) < (90 if powered else 50):
@@ -817,9 +825,6 @@ class Companion(QWidget):
                 continue
             p["x"] += p["vx"] * dt
             p["y"] += p["vy"] * dt
-            if p["kind"] == "beam":  # converging charge streams keep their speed
-                alive.append(p)
-                continue
             p["vx"] *= 0.98
             if p["kind"] == "pixel" and p["max"] < 2:  # burst pixels fall a bit
                 p["vy"] += 120 * dt
@@ -896,103 +901,102 @@ class Companion(QWidget):
         return leveled
 
     # ---------- SW999 transformation ----------
+    # LV.999 is her future self, sealed inside a game cartridge (Elio keeps it).
+    # cart (falls in) -> insert (slides into her handheld) -> boot (loading
+    # screen) -> derez (breaks into pixels, re-forms as LV.999) -> active
+    # (godmode) -> rerez (pixels back) -> eject (cartridge flies off) -> done.
     def transform(self):
-        """charge -> swap (scanline wipe in) -> active -> revert (wipe out)."""
         if self.form_phase or not self.isVisible():
             return
-        self.form_phase, self.form_t0 = "charge", self.t
+        self.form_phase, self.form_t0 = "cart", self.t
         self.gum_t = None
         self.jump = self.jump_v = 0.0
+        self.bubble.hide()  # keep the boot screen clear
         if self.form_movie:
             self.form_movie.start()
-        self.play("transform")
-        self.say("sw999_charge", force=True)
+        self.play("cart")
 
     def revert(self):
-        if self.form_phase == "charge":
+        ph = self.form_phase
+        if ph == "cart":
             self.form_phase = None
-        elif self.form_phase in ("swap", "active"):
-            self.form_phase, self.form_t0 = "revert", self.t
+        elif ph in ("insert", "boot"):
+            self.set_phase("eject")
+        elif ph in ("derez", "active"):
+            self.set_phase("rerez")
+
+    def set_phase(self, ph):
+        self.form_phase, self.form_t0 = ph, self.t
+        if ph == "boot":
+            self.play("transform")  # insert click + boot jingle
+        elif ph == "derez":
+            self.play("godmode")
+            self.start_glitch(0.15)
+        elif ph == "active":
+            for _ in range(40):
+                self.spawn_particle(burst=True, colors=SW999_COLORS)
+            self.floaters.append(dict(text="GODMODE", x=self.width() / 2 - 62, y=PAD + 14, vy=-20,
+                                      life=2.0, max=2.0, color=PINK, size=20, big=True))
+            self.say("sw999_on", force=True)
+        elif ph == "rerez":
             self.play("revert")
-            self.start_glitch(0.25)
+            self.start_glitch(0.2)
+        elif ph == "eject":
+            self.play("eject")
 
     def form_progress(self):
         """(phase, 0..1 progress through it)."""
         if not self.form_phase:
             return None, 0.0
-        dur = {"charge": CHARGE_T, "swap": SWAP_T, "revert": REVERT_T}.get(
-            self.form_phase, max(2.0, float(self.cfg.get("sw999_seconds", 12))))
+        dur = PHASE_T.get(self.form_phase) or max(4.0, float(self.cfg.get("sw999_seconds", 12)))
         return self.form_phase, max(0.0, min(1.0, (self.t - self.form_t0) / dur))
 
     def form_amount(self):
-        """How much of SW999 is showing (wings, halo, aura): 0..1."""
+        """How much of the LV.999 look (wings, tail, aura) is showing: 0..1."""
         ph, k = self.form_progress()
-        return {"swap": k, "active": 1.0, "revert": 1.0 - k}.get(ph, 0.0)
-
-    def form_scale(self):
-        ph, k = self.form_progress()
-        if ph == "swap":  # overshoot pop
-            return 1 + (FORM_SCALE - 1) * k + 0.06 * math.sin(k * math.pi)
-        if ph == "active":
-            return FORM_SCALE + 0.01 * math.sin(self.t * 3)
-        if ph == "revert":
-            return 1 + (FORM_SCALE - 1) * (1 - k)
-        if ph == "charge":  # crouch / compress before the jump
-            return 1 - 0.04 * k
-        return 1.0
+        if ph == "derez":
+            return max(0.0, k * 2 - 1)
+        if ph == "rerez":
+            return max(0.0, 1 - k * 2)
+        return 1.0 if ph == "active" else 0.0
 
     def update_form(self, dt):
         ph, k = self.form_progress()
-        if not ph:
+        if not ph or k < 1:
             return
-        cx, cy = self.width() / 2, PAD + self.img_h / 2
-        if ph == "charge":
-            # data streams converge on her
-            n = int(dt * (40 + 80 * k)) + (random.random() < (dt * (40 + 80 * k)) % 1)
-            for _ in range(n):
-                ang = random.uniform(0, 2 * math.pi)
-                r = random.uniform(0.55, 0.75) * max(self.img_w, self.img_h)
-                life = random.uniform(0.35, 0.6)
-                x, y = cx + math.cos(ang) * r, cy + math.sin(ang) * r
-                self.particles.append(dict(
-                    x=x, y=y, vx=(cx - x) / life, vy=(cy - y) / life, life=life, max=life,
-                    color=random.choice(SW999_COLORS), kind="beam", ch="", size=random.choice((3, 4, 5)),
-                    blink=random.uniform(6, 12)))
-            if k >= 1:
-                self.form_phase, self.form_t0 = "swap", self.t
-                self.start_glitch(0.2)
-                for _ in range(45):
-                    self.spawn_particle(burst=True, colors=SW999_COLORS)
-                self.floaters.append(dict(text="LV.999", x=cx - 55, y=PAD + 18, vy=-22,
-                                          life=2.2, max=2.2, color=GOLD, size=24, big=True))
-        elif ph == "swap" and k >= 1:
-            self.form_phase, self.form_t0 = "active", self.t
-            self.say("sw999_on", force=True)
-        elif ph == "active" and k >= 1:
-            self.revert()
-        elif ph == "revert" and k >= 1:
-            self.form_phase = None
-            if self.form_movie:
-                self.form_movie.stop()
-            for _ in range(20):
-                self.spawn_particle(burst=True)
-            self.say("sw999_off", force=True)
+        nxt = {"cart": "insert", "insert": "boot", "boot": "derez", "derez": "active",
+               "active": "rerez", "rerez": "eject"}.get(ph)
+        if nxt:
+            self.set_phase(nxt)
+            return
+        self.form_phase = None  # eject finished
+        if self.form_movie:
+            self.form_movie.stop()
+        self.say("sw999_off", force=True)
+
+    def anchors(self):
+        return FORM_ANCHORS.get(self.cur_file.name) if self.cur_file else None
+
+    def has_form_art(self):
+        custom = self.form_movie.currentPixmap() if self.form_movie else self.form_scaled
+        return custom is not None and not custom.isNull()
 
     def form_sprite(self, pix):
-        """The SW999 pixmap and its top-left offset inside the img_w x img_h box."""
-        custom = self.form_movie.currentPixmap() if self.form_movie else self.form_scaled
-        if custom is not None and not custom.isNull():
+        """The LV.999 pixmap and its top-left offset inside the img_w x img_h box."""
+        if self.has_form_art():
+            custom = self.form_movie.currentPixmap() if self.form_movie else self.form_scaled
             return custom, (self.img_w - custom.width()) / 2, self.img_h - custom.height()
         key = pix.cacheKey()
         if key not in self.form_cache:
             if len(self.form_cache) > 64:
                 self.form_cache.clear()
-            self.form_cache[key] = self.build_overclocked(pix)
+            self.form_cache[key] = self.build_godmode_tint(pix)
         return self.form_cache[key], 0, 0
 
     @staticmethod
-    def build_overclocked(pix):
-        """Generated SW999 look: holographic gradient + scanlines over her art."""
+    def build_godmode_tint(pix):
+        """Without LV.999 art: her own art with a light cyan->pink wash (her LV.999
+        gradient colours) and faint scanlines."""
         w, h = pix.width(), pix.height()
         out = QPixmap(pix.size())
         out.fill(Qt.GlobalColor.transparent)
@@ -1000,15 +1004,39 @@ class Companion(QWidget):
         p.drawPixmap(0, 0, pix)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
         g = QLinearGradient(0, 0, 0, h)
-        g.setColorAt(0.0, QColor(94, 242, 255, 120))
-        g.setColorAt(0.45, QColor(180, 140, 255, 70))
-        g.setColorAt(0.8, QColor(255, 211, 107, 60))
-        g.setColorAt(1.0, QColor(255, 107, 214, 110))
+        g.setColorAt(0.0, QColor(94, 242, 255, 55))
+        g.setColorAt(0.5, QColor(160, 120, 255, 25))
+        g.setColorAt(1.0, QColor(255, 107, 214, 60))
         p.fillRect(out.rect(), g)
         for y in range(0, h, 3):
-            p.fillRect(0, y, w, 1, QColor(255, 255, 255, 26))
+            p.fillRect(0, y, w, 1, QColor(255, 255, 255, 14))
         p.end()
         return out
+
+    def pixel_blocks(self, pix):
+        """Cut a sprite into coloured blocks for the de-rez / re-rez effect."""
+        key = pix.cacheKey()
+        if key in self.block_cache:
+            return self.block_cache[key]
+        if len(self.block_cache) > 16:
+            self.block_cache.clear()
+        img = pix.toImage()
+        w, h = img.width(), img.height()
+        b = max(4, round(self.img_h / 48))
+        rng = random.Random(999)
+        blocks = []
+        for y in range(0, h, b):
+            for x in range(0, w, b):
+                c = img.pixelColor(min(w - 1, x + b // 2), min(h - 1, y + b // 2))
+                if c.alpha() < 60:
+                    continue
+                ang = rng.uniform(0, 2 * math.pi)
+                blocks.append((x, y, QColor(c), math.cos(ang), math.sin(ang),
+                               rng.uniform(0.15, 0.55) * self.img_h,
+                               0.25 * (1 - y / h) + rng.uniform(0, 0.15),  # top goes last
+                               rng.choice((CYAN, PINK)) if rng.random() < 0.25 else None))
+        self.block_cache[key] = (b, blocks)
+        return b, blocks
 
     # ---------- painting ----------
     def paintEvent(self, _):
@@ -1022,9 +1050,9 @@ class Companion(QWidget):
 
         cx = self.width() / 2
         sy = PAD + self.img_h + 26
-        # ground point under her feet (follows mirror and the SW999 scale-up)
+        # ground point under her feet (follows mirror)
         gx = 1 - self.ground_x if self.cfg["mirror"] else self.ground_x
-        fx = cx + (gx - 0.5) * self.img_w * self.form_scale()
+        fx = cx + (gx - 0.5) * self.img_w
         k = max(0.4, min(1.2, 1.0 + (lift / 80.0)))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(120, 90, 200, int(70 * k)))
@@ -1033,8 +1061,6 @@ class Companion(QWidget):
 
         phase, fk = self.form_progress()
         amount = self.form_amount()
-        if amount > 0:
-            self.paint_floor_rings(p, fx, sy, amount)
 
         pix = self.frame()
         if pix is None or pix.isNull():
@@ -1043,61 +1069,49 @@ class Companion(QWidget):
             p.save()
             if sleepy and not phase:
                 p.setOpacity(0.85)
-            shx = shy = 0.0
-            if phase == "charge":  # power surge shake
-                amp = 1 + 4 * fk
-                shx, shy = random.uniform(-amp, amp), random.uniform(-amp, amp) * 0.5
-            p.translate(cx + shx, PAD + self.img_h / 2 + lift + shy)
+            p.translate(cx, PAD + self.img_h / 2 + lift)
             p.rotate(tilt)
-            s = self.form_scale()
-            p.translate(0, (1 - s) * self.img_h / 2)  # scale about her feet
-            p.scale(s, s)
             if self.cfg["mirror"]:
                 p.scale(-1, 1)
             p.translate(-self.img_w / 2, -self.img_h / 2)
             glitching = self.t < self.glitch_until or (
-                phase == "charge" and random.random() < 0.15 + 0.6 * fk)
+                phase == "boot" and random.random() < 0.05 + 0.35 * fk)
+            custom = self.has_form_art()
+
+            # behind her: wings, cape, tail
             if amount > 0:
                 self.paint_wings(p, amount)
-            if phase in ("swap", "active", "revert"):
-                form, fx, fy = self.form_sprite(pix)
-                if phase == "active":
-                    self.paint_aura(p, form, fx, fy)
-                    self.draw_pix(p, form, fx, fy, glitching)
+                if not custom:
+                    self.paint_cape(p, amount)
+                    self.paint_tail(p, amount)
+
+            if phase in ("derez", "rerez"):
+                form, ox, oy = self.form_sprite(pix)
+                first, second = ((pix, 0, 0), (form, ox, oy)) if phase == "derez" else \
+                                ((form, ox, oy), (pix, 0, 0))
+                if fk < 0.5:
+                    self.paint_blocks(p, *first, fk * 2, gathering=False)
                 else:
-                    # scanline wipe: swap rises from her feet, revert falls from her head
-                    line = self.img_h * ((1 - fk) if phase == "swap" else fk)
-                    big = 4 * self.img_h
-                    above, below = QRectF(-big, -big, 2 * big, big + line), QRectF(-big, line, 2 * big, big)
-                    old_part, new_part = (above, below) if phase == "swap" else (below, above)
-                    p.save()
-                    p.setClipRect(old_part)
-                    self.draw_pix(p, pix, 0, 0, glitching)
-                    p.setClipRect(new_part)
-                    self.paint_aura(p, form, fx, fy)
-                    self.draw_pix(p, form, fx, fy, glitching)
-                    p.restore()
-                    self.paint_scanline(p, line)
-                    if phase == "swap" and fk < 0.2:  # flash
-                        p.setOpacity(0.8 * (1 - fk / 0.2))
-                        p.drawPixmap(0, 0, self.get_tint(pix, QColor("#ffffff")))
-                        p.setOpacity(1.0)
-                self.paint_halo(p, amount)
+                    self.paint_blocks(p, *second, fk * 2 - 1, gathering=True)
+            elif phase == "active":
+                form, ox, oy = self.form_sprite(pix)
+                self.paint_aura(p, form, ox, oy)
+                self.draw_pix(p, form, ox, oy, glitching)
             else:
-                if phase == "charge":
-                    # brighten toward white as the charge builds
-                    self.draw_pix(p, pix, 0, 0, glitching)
-                    p.setOpacity(0.55 * fk * fk)
-                    p.drawPixmap(0, 0, self.get_tint(pix, QColor("#e9fbff")))
-                    p.setOpacity(1.0)
-                else:
-                    self.draw_pix(p, pix, 0, 0, glitching)
+                self.draw_pix(p, pix, 0, 0, glitching)
+
+            # in front of her: handheld glow, cartridge, sunglasses
+            if phase in ("insert", "boot", "derez") or (phase == "active" and not custom):
+                self.paint_screen_glow(p, phase, fk)
+            self.paint_cartridge(p, phase, fk, custom)
+            if not custom and (phase == "active" or (phase == "rerez" and amount > 0)):
+                self.paint_shades(p, phase, fk, amount)
             p.restore()
 
-        if phase == "charge":
-            self.paint_charge_hud(p, cx, PAD + self.img_h / 2 + lift, fk)
+        if phase == "boot":
+            self.paint_boot_screen(p, fk)
         elif phase == "active":
-            self.paint_timer(p, fx, sy, 1 - fk)
+            self.paint_godmode_bar(p, fx, sy, 1 - fk)
 
         self.paint_gum(p, lift)
         self.paint_particles(p)
@@ -1133,134 +1147,363 @@ class Companion(QWidget):
             p.drawPixmap(0, 0, pix)
         p.restore()
 
-    # --- SW999 effects (drawn in her local, img_w x img_h coordinates) ---
+    # --- LV.999 effects (drawn in her local img_w x img_h coordinates) ---
+    def anchor_pt(self, key, default):
+        a = (self.anchors() or {}).get(key, default)
+        return a[0] * self.img_w, a[1] * self.img_h
+
     def paint_aura(self, p, form, fx, fy):
-        """Pulsing cyan outline glow behind the transformed sprite."""
-        glow = self.get_tint(form, CYAN)
-        pulse = 0.16 + 0.08 * math.sin(self.t * 5)
+        """Pulsing cyan/pink outline glow (her LV.999 gradient colours)."""
+        pulse = 0.14 + 0.07 * math.sin(self.t * 5)
         p.save()
         p.setOpacity(pulse)
         for i in range(8):
-            a = i * math.pi / 4
+            a = i * math.pi / 4 + self.t * 0.8
+            glow = self.get_tint(form, CYAN if i % 2 else PINK)
             p.drawPixmap(QPointF(fx + math.cos(a) * 4, fy + math.sin(a) * 4), glow)
         p.restore()
 
-    def paint_wings(self, p, amount):
-        """Angular data-shard wings unfolding from her back."""
-        w, h = self.img_w, self.img_h
-        reach = 0.38 * w + 0.75 * PAD
+    def paint_blocks(self, p, pix, ox, oy, u, gathering):
+        """De-rez: blocks fly apart (u 0->1). Gathering: they fly back together."""
+        b, blocks = self.pixel_blocks(pix)
+        h = self.img_h
         p.save()
-        p.setOpacity(min(1.0, amount * 1.4))
-        for side in (-1, 1):
-            ox, oy = w / 2 + side * 0.12 * w, 0.42 * h
-            for i, (deg, frac) in enumerate(((-38, 0.85), (-12, 1.0), (14, 0.7))):
-                flap = math.sin(self.t * 2.2 + i * 0.6) * 6
-                a = math.radians(deg + flap)
-                L = reach * frac * (0.3 + 0.7 * amount)
-                dx, dy = side * math.cos(a), math.sin(a)
-                px, py = -dy, dx  # perpendicular
-                tip = QPointF(ox + dx * L, oy + dy * L)
-                mid = 0.35 * L
-                poly = QPolygonF([QPointF(ox, oy),
-                                  QPointF(ox + dx * mid + px * L * 0.09, oy + dy * mid + py * L * 0.09),
-                                  tip,
-                                  QPointF(ox + dx * mid - px * L * 0.06, oy + dy * mid - py * L * 0.06)])
-                g = QLinearGradient(QPointF(ox, oy), tip)
-                g.setColorAt(0, QColor(94, 242, 255, 170))
-                g.setColorAt(0.6, QColor(180, 140, 255, 110))
-                g.setColorAt(1, QColor(255, 211, 107, 20))
-                p.setBrush(g)
-                p.setPen(QPen(QColor(200, 250, 255, 190), 1.2))
-                p.drawPolygon(poly)
-                # bright data node riding along each shard
-                u = (self.t * 0.8 + i * 0.33) % 1.0
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(255, 255, 255, int(220 * (1 - u))))
-                p.drawRect(QRectF(ox + dx * L * u - 2, oy + dy * L * u - 2, 4, 4))
+        p.setPen(Qt.PenStyle.NoPen)
+        for x, y, c, dx, dy, dist, delay, alt in blocks:
+            v = max(0.0, min(1.0, (u - delay) / 0.6))
+            if gathering:
+                v = 1 - v  # 1 = scattered, 0 = home
+                v = v * v
+            else:
+                v = v ** 1.4
+            off = dist * v
+            col = QColor(alt) if alt is not None and 0.08 < v < 0.9 else QColor(c)
+            col.setAlphaF(max(0.0, min(1.0, (1 - v) * c.alphaF() * 1.2)))
+            p.fillRect(QRectF(ox + x + dx * off, oy + y + dy * off - v * 0.12 * h, b, b), col)
         p.restore()
 
-    def paint_halo(self, p, amount):
+    def paint_wings(self, p, amount):
+        """Godmode wings: three long segments per side, cyan->pink, in black
+        mechanical frames. They unfold from folded-down as amount goes 0->1."""
+        w = self.img_w
+        bx, by = self.anchor_pt("back", (0.45, 0.55))
+        reach = min(bx, w - bx) + PAD * 0.85
+        e = 1 - (1 - amount) ** 3
+        p.save()
+        p.setOpacity(min(1.0, amount * 1.5))
+        for side in (-1, 1):
+            hub = QPointF(bx + side * 0.05 * w, by)
+            for i, (deg, frac, width) in enumerate(((-34, 1.0, 0.24), (-6, 0.88, 0.20), (20, 0.70, 0.17))):
+                flap = math.sin(self.t * 2.0 + i * 0.5) * 4 * e
+                a = math.radians(70 + (deg + flap - 70) * e)  # folded = pointing down
+                L = reach * frac * (0.25 + 0.75 * e)
+                dx, dy = side * math.cos(a), math.sin(a)
+                px, py = -dy, dx
+                wd = L * width
+
+                def pt(t, s):
+                    return QPointF(hub.x() + dx * L * t + px * wd * s, hub.y() + dy * L * t + py * wd * s)
+                # black mechanical frame
+                frame = QPolygonF([pt(0, 0.35), pt(0.12, 0.8), pt(0.85, 0.55), pt(1.0, 0), pt(0.85, -0.45),
+                                   pt(0.12, -0.6), pt(0, -0.35)])
+                p.setPen(QPen(QColor(10, 8, 18, 235), 1.2))
+                p.setBrush(QColor(18, 14, 30, 235))
+                p.drawPolygon(frame)
+                # glowing membrane: cyan at the root fading to pink at the tip
+                inner = QPolygonF([pt(0.1, 0.3), pt(0.18, 0.55), pt(0.82, 0.35), pt(0.95, 0), pt(0.82, -0.28),
+                                   pt(0.18, -0.38), pt(0.1, -0.2)])
+                g = QLinearGradient(pt(0, 0), pt(1, 0))
+                g.setColorAt(0, QColor(94, 242, 255, 235))
+                g.setColorAt(0.45, QColor(94, 242, 255, 225))
+                g.setColorAt(0.75, QColor(200, 150, 255, 220))
+                g.setColorAt(1, QColor(255, 107, 214, 235))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(g)
+                p.drawPolygon(inner)
+                # frame struts across the membrane
+                p.setPen(QPen(QColor(10, 8, 18, 220), 1.6))
+                for t in (0.38, 0.62):
+                    p.drawLine(pt(t, 0.55), pt(t, -0.45))
+            # mechanical hub joint
+            p.setPen(QPen(QColor(10, 8, 18), 1.5))
+            p.setBrush(QColor(40, 34, 60))
+            p.drawEllipse(hub, 0.03 * w, 0.03 * w)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(CYAN)
+            p.drawEllipse(hub, 0.012 * w, 0.012 * w)
+        p.restore()
+
+    def paint_cape(self, p, amount):
+        """Black waist cape fading to dark purple and light blue, with pixelated
+        edges, flowing out behind her."""
         w, h = self.img_w, self.img_h
-        c = QPointF(w / 2, 0.07 * h - 6 * (1 - amount))
-        rx, ry = 0.2 * w, 0.045 * w
+        wx, wy = self.anchor_pt("waist", (0.45, 0.72))
+        b = max(4, round(h / 40))
         p.save()
         p.setOpacity(amount)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(94, 242, 255, 70), 6))
-        p.drawEllipse(c, rx, ry)
-        p.setPen(QPen(QColor(220, 255, 255, 230), 2))
-        p.drawEllipse(c, rx, ry)
+        g = QLinearGradient(0, wy, 0, h)
+        g.setColorAt(0, QColor(12, 10, 20))
+        g.setColorAt(0.55, QColor(58, 29, 92))
+        g.setColorAt(1, QColor(127, 214, 255))
+        top_l, top_r = wx - 0.14 * w, wx + 0.12 * w
+        hem_l, hem_r = wx - 0.18 * w, wx + 0.32 * w
+        path = QPainterPath(QPointF(top_l, wy))
+        path.lineTo(top_r, wy)
+        # trailing edge flutters outward
+        sway = math.sin(self.t * 2.4) * 0.02 * w
+        path.quadTo(QPointF(top_r + 0.12 * w + sway, wy + 0.12 * h), QPointF(hem_r + sway, h * 0.96))
+        # pixel-stepped hem
+        x = hem_r + sway
+        n = 0
+        while x > hem_l:
+            step = b * (1 + (n * 7 % 3 == 0))
+            yy = h * 0.96 - b * ((n * 5 + int(self.t * 4)) % 3)
+            path.lineTo(x, yy)
+            x -= step
+            path.lineTo(x, yy)
+            n += 1
+        path.lineTo(hem_l, h * 0.9)
+        path.closeSubpath()
         p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawPath(path)
+        # loose pixels peeling off the hem
         for i in range(6):
-            a = self.t * 1.6 + i * math.pi / 3
-            p.setBrush(GOLD if i % 2 else CYAN)
-            p.drawRect(QRectF(c.x() + math.cos(a) * rx - 2.5, c.y() + math.sin(a) * ry - 2.5, 5, 5))
+            u = (self.t * 0.6 + i / 6) % 1.0
+            c = QColor(CYAN if i % 2 else QColor(127, 214, 255))
+            c.setAlphaF((1 - u) * 0.9)
+            p.fillRect(QRectF(hem_l + (i + 0.5) / 6 * (hem_r - hem_l) + sway + u * 0.1 * w,
+                              h * 0.96 + u * 0.08 * h, b * 0.8, b * 0.8), c)
         p.restore()
 
-    def paint_scanline(self, p, y):
-        w = self.img_w
+    def paint_tail(self, p, amount):
+        """Black draconic tail swishing out from behind her."""
+        w, h = self.img_w, self.img_h
+        hx, hy = self.anchor_pt("hip", (0.5, 0.85))
+        e = 1 - (1 - amount) ** 2
+        n = 22
+        pts = []
+        for i in range(n + 1):
+            s = i / n
+            swish = math.sin(self.t * 2.6 - s * 3.2) * 0.05 * h * s
+            x = hx + s * 0.30 * w * e
+            y = hy + math.sin(s * math.pi) * 0.04 * h - s * s * 0.20 * h * e + swish
+            pts.append(QPointF(x, y))
         p.save()
-        g = QLinearGradient(0, y - 14, 0, y + 14)
-        g.setColorAt(0, QColor(94, 242, 255, 0))
-        g.setColorAt(0.5, QColor(94, 242, 255, 150))
-        g.setColorAt(1, QColor(94, 242, 255, 0))
-        p.fillRect(QRectF(-0.15 * w, y - 14, 1.3 * w, 28), g)
-        p.fillRect(QRectF(-0.2 * w, y - 1.5, 1.4 * w, 3), QColor(255, 255, 255, 240))
+        p.setOpacity(amount)
+        r0 = 0.04 * h
+        p.setPen(Qt.PenStyle.NoPen)
+        # dark purple rim, then black body
+        for col, extra in ((QColor(58, 29, 92), 1.5), (QColor(12, 10, 20), 0)):
+            p.setBrush(col)
+            for i, q in enumerate(pts):
+                r = r0 * (1 - i / (n + 2)) + extra
+                p.drawEllipse(q, r, r)
+        # spines along the top
+        p.setBrush(QColor(12, 10, 20))
+        for i in range(3, n - 2, 4):
+            a, c = pts[i], pts[i + 1]
+            r = r0 * (1 - i / (n + 2))
+            p.drawPolygon(QPolygonF([QPointF(a.x() - r * 0.5, a.y() - r * 0.6),
+                                     QPointF(c.x(), c.y() - r * 2.0),
+                                     QPointF(c.x() + r * 0.4, c.y() - r * 0.5)]))
+        # pixel spade at the tip, cyan -> pink
+        tip = pts[-1]
+        s = max(3.0, r0 * 0.9)
+        g = QLinearGradient(tip.x() - s, tip.y() - s, tip.x() + s, tip.y() + s)
+        g.setColorAt(0, CYAN)
+        g.setColorAt(1, PINK)
+        p.setBrush(g)
+        p.drawPolygon(QPolygonF([QPointF(tip.x(), tip.y() - s * 1.6), QPointF(tip.x() + s, tip.y()),
+                                 QPointF(tip.x(), tip.y() + s * 1.1), QPointF(tip.x() - s, tip.y())]))
         p.restore()
 
-    # --- SW999 HUD (window coordinates) ---
-    def paint_floor_rings(self, p, cx, sy, amount):
+    def paint_shades(self, p, phase, k, amount):
+        """Godmode: her visor becomes big triangular sunglasses. They drop onto
+        her face when godmode starts, then a glint sweeps across."""
+        a = (self.anchors() or {}).get("eyes")
+        if not a:
+            return
+        ex, ey, ew = a[0] * self.img_w, a[1] * self.img_h, a[2] * self.img_w
+        since = (self.t - self.form_t0) if phase == "active" else 9.0
+        drop = max(0.0, 1 - since / 0.3)
+        oy = -drop * drop * 0.25 * self.img_h
+        sx, sy = ew / 2, ew * 0.30
+
+        def q(x, y):
+            return QPointF(ex + x * sx, ey + oy + y * sy)
+        left = QPolygonF([q(-1.08, -0.62), q(-0.06, -0.12), q(-0.30, 0.55)])
+        right = QPolygonF([q(0.06, -0.12), q(1.12, -0.66), q(0.36, 0.52)])
         p.save()
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        rx = self.img_w * 0.42 * (0.5 + 0.5 * amount)
-        rx = min(rx, cx - 4, self.width() - cx - 4)  # stay inside the window
-        for i, (scale, speed, col) in enumerate(((1.0, 30, CYAN), (0.72, -45, GOLD))):
-            c = QColor(col)
-            c.setAlphaF(0.8 * amount)
-            pen = QPen(c, 2)
-            pen.setDashPattern([6, 4])
-            pen.setDashOffset(self.t * speed)
-            p.setPen(pen)
-            p.drawEllipse(QPointF(cx, sy), rx * scale, 9 * scale)
+        p.setOpacity(amount)
+        g = QLinearGradient(q(-1, 0), q(1, 0))
+        g.setColorAt(0, QColor(94, 242, 255, 235))
+        g.setColorAt(1, QColor(255, 107, 214, 235))
+        p.setPen(QPen(QColor(10, 8, 18), max(2.0, ew * 0.05),
+                      Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.MiterJoin))
+        p.setBrush(g)
+        p.drawPolygon(left)
+        p.drawPolygon(right)
+        p.drawLine(q(-0.06, -0.12), q(0.06, -0.12))  # bridge
+        # glint sweeping across the lenses
+        if 0.3 < since < 0.9:
+            u = (since - 0.3) / 0.6
+            p.setClipping(True)
+            clip = QPainterPath()
+            clip.addPolygon(left)
+            clip.addPolygon(right)
+            p.setClipPath(clip)
+            gx = ex - sx * 1.2 + u * sx * 2.4
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 200))
+            p.drawPolygon(QPolygonF([QPointF(gx, ey + oy - sy), QPointF(gx + ew * 0.08, ey + oy - sy),
+                                     QPointF(gx - ew * 0.06, ey + oy + sy), QPointF(gx - ew * 0.14, ey + oy + sy)]))
         p.restore()
 
-    def paint_charge_hud(self, p, cx, cy, k):
-        r = 0.5 * max(self.img_w, self.img_h)
-        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        p.save()
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(94, 242, 255, 60), 8))
-        p.drawArc(rect, 90 * 16, int(-360 * 16 * k))
-        p.setPen(QPen(QColor(220, 255, 255, 230), 2.5))
-        p.drawArc(rect, 90 * 16, int(-360 * 16 * k))
-        font = QFont("Source Code Pro")
-        font.setPixelSize(12)
-        font.setBold(True)
-        p.setFont(font)
-        bars = int(k * 10)
-        txt = f"LV.999 [{'#' * bars}{'.' * (10 - bars)}] {int(k * 100):3d}%"
-        tw = QFontMetrics(font).horizontalAdvance(txt)
-        ty = self.height() - 12
-        p.setPen(QColor(14, 10, 26))
-        p.drawText(QPointF(cx - tw / 2 + 1, ty + 1), txt)
-        p.setPen(CYAN if int(self.t * 10) % 2 else QColor("#e8e6ff"))
-        p.drawText(QPointF(cx - tw / 2, ty), txt)
-        p.restore()
-
-    def paint_timer(self, p, cx, sy, left):
-        """Remaining overclock time as a small bar under her feet."""
-        bw = self.img_w * 0.5
-        x, y = cx - bw / 2, sy + 18
+    def paint_screen_glow(self, p, phase, k):
+        """Her handheld's screen lights up once the cartridge is in."""
+        sx, sy = self.anchor_pt("screen", (0.5, 0.75))
+        r = 0.05 * self.img_h
+        flick = 0.6 + 0.4 * math.sin(self.t * 23) if phase == "boot" else 0.8
+        col = CYAN if phase != "boot" or int(self.t * 8) % 2 else PINK
+        g = QRadialGradient(sx, sy, r * 2.2)
+        c0, c1 = QColor(col), QColor(col)
+        c0.setAlpha(int(200 * flick))
+        c1.setAlpha(0)
+        g.setColorAt(0, c0)
+        g.setColorAt(1, c1)
         p.save()
         p.setPen(Qt.PenStyle.NoPen)
-        p.fillRect(QRectF(x, y, bw, 4), QColor(14, 10, 26, 180))
-        p.fillRect(QRectF(x, y, bw * left, 4), GOLD if left < 0.25 else CYAN)
-        font = QFont("Source Code Pro")
-        font.setPixelSize(10)
-        font.setBold(True)
-        p.setFont(font)
-        p.setPen(GOLD)
-        p.drawText(QPointF(x, y - 3), "LV.999")
+        p.setBrush(g)
+        p.drawEllipse(QPointF(sx, sy), r * 2.2, r * 2.2)
+        p.restore()
+
+    def cart_size(self):
+        ch = 0.12 * self.img_h
+        return ch * 0.82, ch
+
+    def paint_cartridge(self, p, phase, k, custom):
+        if phase not in ("cart", "insert", "boot", "derez", "active", "eject"):
+            return
+        if phase == "active" and custom:
+            return
+        slot_x, slot_y = self.anchor_pt("slot", (0.5, 0.7))
+        cw, ch = self.cart_size()
+        seated = slot_y + ch * 0.35  # how deep it sits once inserted
+        x, y, ang, clip = slot_x, seated, 0.0, True
+        if phase == "cart":  # tossed in from above, spinning, lands on the slot
+            e = 1 - (1 - k) ** 3
+            x = slot_x + (1 - e) * 0.35 * self.img_w
+            y = (-PAD - ch) + (slot_y - (-PAD - ch)) * e
+            ang = (1 - e) * 540
+            clip = False
+        elif phase == "insert":  # chk
+            y = slot_y + (seated - slot_y) * (k * k)
+        elif phase == "eject":  # pops out and flies back off-screen
+            u = min(1.0, k / 0.2)
+            y = seated - (seated - slot_y + ch * 0.2) * u
+            if k > 0.2:
+                v = (k - 0.2) / 0.8
+                x = slot_x + v * 0.5 * self.img_w
+                y = slot_y - ch * 0.2 - v * (slot_y + PAD + ch * 2) + 30 * v * (1 - v)
+                ang = -v * 720
+                clip = False
+        p.save()
+        if clip:  # the part below the slot is inside the handheld
+            p.setClipRect(QRectF(-4 * self.img_w, -4 * self.img_h, 8 * self.img_w, 4 * self.img_h + slot_y))
+        p.translate(x, y)
+        p.rotate(ang)
+        self.draw_cart_shape(p, cw, ch)
+        p.restore()
+
+    @staticmethod
+    def draw_cart_shape(p, cw, ch):
+        """Retro game cartridge, anchored at the middle of its bottom edge."""
+        body = QPainterPath()
+        body.moveTo(-cw / 2, -ch)
+        body.lineTo(cw / 2 - cw * 0.18, -ch)
+        body.lineTo(cw / 2, -ch + cw * 0.18)  # clipped corner
+        body.lineTo(cw / 2, 0)
+        body.lineTo(-cw / 2, 0)
+        body.closeSubpath()
+        p.setPen(QPen(QColor(10, 8, 18), 1.4))
+        p.setBrush(QColor(52, 48, 66))
+        p.drawPath(body)
+        # grip ridges
+        p.setPen(QPen(QColor(30, 26, 42), 1))
+        for i in range(3):
+            yy = -ch + ch * (0.07 + 0.05 * i)
+            p.drawLine(QPointF(-cw * 0.35, yy), QPointF(cw * 0.2, yy))
+        # label: her cyan -> pink gradient with "LV.999"
+        lab = QRectF(-cw * 0.38, -ch * 0.72, cw * 0.76, ch * 0.5)
+        g = QLinearGradient(lab.topLeft(), lab.bottomRight())
+        g.setColorAt(0, CYAN)
+        g.setColorAt(1, PINK)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawRect(lab)
+        f = QFont("Source Code Pro")
+        f.setPixelSize(max(5, int(ch * 0.2)))
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(14, 10, 26))
+        p.drawText(lab, Qt.AlignmentFlag.AlignCenter, "999")
+        # gold contacts
+        p.setPen(QPen(GOLD, 1))
+        for i in range(5):
+            xx = -cw * 0.3 + i * cw * 0.15
+            p.drawLine(QPointF(xx, -ch * 0.12), QPointF(xx, -2))
+
+    # --- LV.999 HUD (window coordinates) ---
+    def paint_boot_screen(self, p, k):
+        """Retro loading window above her head."""
+        f = QFont("Source Code Pro")
+        f.setPixelSize(11)
+        f.setBold(True)
+        fm = QFontMetrics(f)
+        lines = ["CARTRIDGE: LV.999"]
+        bars = int(min(1.0, k / 0.75) * 12)
+        lines.append("[" + "#" * bars + "." * (12 - bars) + "]")
+        if k > 0.75:
+            lines.append("GODMODE: ON" if int(self.t * 8) % 2 else "GODMODE:")
+        bw = max(fm.horizontalAdvance(s) for s in ("CARTRIDGE: LV.999", "[" + "#" * 12 + "]")) + 20
+        bh = 14 + fm.height() * 3 + 6
+        x, y = self.width() / 2 - bw / 2, 4
+        p.save()
+        p.setOpacity(min(1.0, k * 8))
+        p.setPen(QPen(VIOLET, 2))
+        p.setBrush(QColor(14, 10, 26, 235))
+        p.drawRect(QRectF(x, y, bw, bh))
+        g = QLinearGradient(x, 0, x + bw, 0)
+        g.setColorAt(0, CYAN)
+        g.setColorAt(1, PINK)
+        p.fillRect(QRectF(x, y, bw, 4), g)
+        p.setFont(f)
+        for i, s in enumerate(lines):
+            p.setPen(PINK if s.startswith("GODMODE") else CYAN if i == 1 else QColor("#e8e6ff"))
+            p.drawText(QPointF(x + 10, y + 8 + fm.ascent() + i * fm.height()), s)
+        p.restore()
+
+    def paint_godmode_bar(self, p, cx, sy, left):
+        """Segmented retro bar under her feet showing how much godmode is left."""
+        segs = 10
+        sw_, gap, hh = 7, 2, 5
+        total = segs * sw_ + (segs - 1) * gap
+        x, y = cx - total / 2, sy + 14
+        lit = math.ceil(left * segs - 1e-6)
+        p.save()
+        for i in range(segs):
+            u = i / (segs - 1)
+            c = QColor(int(94 + (255 - 94) * u), int(242 + (107 - 242) * u), int(255 + (214 - 255) * u))
+            if i >= lit:
+                c = QColor(40, 34, 60)
+            p.fillRect(QRectF(x + i * (sw_ + gap), y, sw_, hh), c)
+        f = QFont("Source Code Pro")
+        f.setPixelSize(9)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(PINK)
+        p.drawText(QPointF(x, y - 3), "GODMODE")
         p.restore()
 
     def paint_glitch(self, p, pix):
@@ -1379,9 +1622,16 @@ class Companion(QWidget):
         self.play("boop")
         if self.gum_t is None and not self.form_phase and self.cur_file and self.cur_file.name in GUM_POS:
             self.gum_t = self.t
-        self.floaters.append(dict(text="+1 EXP", x=PAD + self.img_w * 0.62 + random.uniform(-10, 10),
-                                  y=PAD + self.img_h * 0.3, vy=-45, life=1.0, max=1.0,
-                                  color=VIOLET, size=12))
+        if self.form_phase == "active":  # godmode: every boop is a 999 crit
+            self.floaters.append(dict(text="999!", x=PAD + self.img_w * 0.55 + random.uniform(-14, 14),
+                                      y=PAD + self.img_h * 0.3, vy=-55, life=0.9, max=0.9,
+                                      color=PINK, size=17, big=True))
+            for _ in range(8):
+                self.spawn_particle(burst=True, colors=SW999_COLORS)
+        else:
+            self.floaters.append(dict(text="+1 EXP", x=PAD + self.img_w * 0.62 + random.uniform(-10, 10),
+                                      y=PAD + self.img_h * 0.3, vy=-45, life=1.0, max=1.0,
+                                      color=VIOLET, size=12))
         leveled = self.add_exp(1)
         if self.combo == 10 and not self.form_phase:
             self.transform()  # rapid booping overclocks her
@@ -1420,11 +1670,11 @@ class Companion(QWidget):
         m.addAction("Say something", lambda: self.say("night" if self.is_sleepy() else "idle", force=True))
         m.addSeparator()
         if self.form_phase:
-            m.addAction(f"Revert to Lv.{self.cfg['level']}", self.revert)
+            m.addAction("Eject cartridge (back to Lv.{})".format(self.cfg["level"]), self.revert)
         else:
-            m.addAction("Transform: SW999  (or boop 10x fast)", self.transform)
-        toggle("Surprise SW999 transformations", "sw999_auto")
-        dur = m.addMenu("SW999 duration")
+            m.addAction("Insert cartridge: LV.999  (or boop 10x fast)", self.transform)
+        toggle("Surprise LV.999 transformations", "sw999_auto")
+        dur = m.addMenu("Godmode duration")
         for secs in (8, 12, 20, 30, 60):
             a = QAction(f"{secs} s", dur, checkable=True)
             a.setChecked(int(self.cfg.get("sw999_seconds", 12)) == secs)

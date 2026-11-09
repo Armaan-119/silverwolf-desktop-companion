@@ -118,24 +118,35 @@ def main():
     save("online", seq([67, 74, 79], 0.06, "square", 0.25))
     save("offline", seq([79, 74, 67], 0.07, "square", 0.25))
 
-    # transform: rising charge (sweep + quickening arpeggio) into a big held chord (SW999)
-    sweep = tone(note(48), 1.3, "square", 0.25, slide=3.0)
-    sweep = np.round(sweep * 4) / 4 * np.linspace(0.2, 1.0, len(sweep))
-    arp = np.concatenate([seq([60, 67, 72, 79], st, "square", 0.125, rel=0.01)
-                          for st in (0.09, 0.07, 0.05, 0.035)])
-    charge = mix(sweep * 0.5, arp * 0.6)
-    burst = tone(4000, 0.12, "noise")
-    chord = mix(*(tone(note(n), 0.6, "square", 0.25, vib=7) for n in (72, 79, 84, 91)))
-    chord = chord * env(len(chord), r=0.45) * 0.7
-    bass = tone(note(36), 0.6, "tri")
-    hit = mix(burst * env(len(burst), r=0.1) * 0.8, chord, bass * env(len(bass), r=0.4))
-    save("transform", np.concatenate([charge, hit]))
+    # --- LV.999 cartridge transformation ---
+    # cart: whoosh as the cartridge is tossed in
+    w = tone(note(60), 0.35, "square", 0.125, slide=1.5)
+    n = tone(2500, 0.35, "noise")
+    save("cart", mix(w * env(len(w), r=0.1) * 0.35, n * np.linspace(0.05, 0.4, len(n))))
 
-    # revert: power-down slide + falling arpeggio
-    down = tone(note(84), 0.5, "square", 0.25, slide=-0.75)
-    down = np.round(down * 3) / 3
-    fall = seq([79, 72, 67, 60], 0.07, "square", 0.25)
-    save("revert", np.concatenate([down * env(len(down), r=0.1) * 0.6, fall]))
+    # transform: chunky insert click, then a retro boot-up jingle
+    click = mix(tone(5000, 0.025, "noise"), tone(note(40), 0.04, "square", 0.5) * 0.6)
+    click = click * env(len(click), r=0.02)
+    boot = seq([None, 72, 79, 84, 88, None, 91, 91], 0.09, "square", 0.25, gap=0.01)
+    beep = tone(note(96), 0.25, "square", 0.25)
+    save("transform", np.concatenate([click, np.zeros(int(SR * 0.08)), boot, beep * env(len(beep), r=0.15)]))
+
+    # godmode: pixel shatter (bitcrushed noise sweep) into a big held chord
+    sh = tone(6000, 0.4, "noise") * np.linspace(1, 0, int(SR * 0.4)) ** 2
+    sw = np.round(tone(note(84), 0.4, "square", 0.5, slide=-0.8) * 2) / 2
+    chord = mix(*(tone(note(m), 0.7, "square", 0.25, vib=7) for m in (72, 76, 79, 84, 91)))
+    bass = tone(note(36), 0.7, "tri")
+    hit = mix(chord * env(len(chord), r=0.5) * 0.7, bass * env(len(bass), r=0.5))
+    save("godmode", np.concatenate([mix(sh * 0.7, sw * 0.4), hit]))
+
+    # revert: de-rez sweep down
+    d = np.round(tone(note(88), 0.55, "square", 0.25, slide=-0.8) * 3) / 3
+    save("revert", d * env(len(d), r=0.2) * 0.8)
+
+    # eject: spring pop + falling blips
+    pop = tone(note(70), 0.08, "square", 0.25, slide=1.2)
+    fall = seq([84, 79, 72], 0.06, "square", 0.25)
+    save("eject", np.concatenate([pop * env(len(pop), r=0.04), fall]))
 
 
 if __name__ == "__main__":
