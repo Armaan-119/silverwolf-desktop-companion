@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 *.bak
+
+# HoYoverse art and video references: keep local, never push
+References/
+forms/*
+!forms/.gitkeep
