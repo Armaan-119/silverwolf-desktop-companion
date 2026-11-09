@@ -51,6 +51,7 @@ VIOLET, CYAN, PINK, BLUE = QColor("#b48cff"), QColor("#5ef2ff"), QColor("#ff6bd6
 PALETTE = [VIOLET, CYAN, PINK, BLUE]
 GLYPHS = list("01") * 4 + list("ABCDEF<>/{}#$")
 EXP_PER_LEVEL = 10
+AFK_SECONDS = 300  # mouse untouched this long -> she comments on you being AFK
 
 # Where the bubblegum sits, as a fraction of the image (x, y). Images not listed
 # here just hop when clicked.
@@ -135,8 +136,15 @@ LINES = {
     "net_up": ["Back online. Reconnected to the server.", "Link restored. Ping me."],
     "drive": ["New drive detected: {name}. Let's see what's inside.", "USB loot: {name}. Plugged in.",
               "{name} mounted. Treasure chest opened."],
+    "wake": ["Back online. Did you put me in sleep mode?", "Rebooted. Where were we?"],
+    "quit": ["Logging off. Don't touch my save.", "Shutting down... for now."],
+    "afk": ["AFK? I'll guard the loot.", "Hello? Player one? ...Fine, I'll idle too."],
+    "levelup_big": ["Lv.{level}! Milestone unlocked."],
+    "download_big": ["Big download: {name}. That's a lot of loot."],
     # LV.999 moments. tools/make_sw999_lines.py swaps in her real voice lines
-    # (kept locally in forms/sw999_lines.json).
+    # (kept locally in forms/sw999_lines.json) and adds some to the moments above.
+    "sw999_first": ["First time seeing my final form? Enjoy it."],
+    "sw999_eject_early": ["Already? I was just getting started."],
     "sw999_hello": ["LV.999, loaded. Let's play.", "Final form, online. Try to keep up."],
     "sw999_idle": ["Max level and nothing to fight. Boring.", "This save file is mine now.",
                    "Want me to one-shot your inbox?", "Boop me a few times. I dare you."],
@@ -154,6 +162,7 @@ SOUND_FOR = {
     "battery_low": "warn", "battery_critical": "warn", "cpu_temp": "warn", "gpu_hot": "warn",
     "ram_high": "warn", "cpu_high": "glitch", "gpu_busy": "glitch",
     "charging": "online", "net_up": "online", "net_down": "offline",
+    "wake": "online", "quit": "offline", "levelup_big": "levelup", "download_big": "loot",
     "sw999_on": "speak", "sw999_off": "speak",
 }
 # sounds still allowed during sleepy hours (idle chatter blips stay quiet)
@@ -167,9 +176,19 @@ def load_local_lines():
         extra = json.loads((HERE / "forms" / "sw999_lines.json").read_text())
     except Exception:
         return
-    for key, lines in extra.items():
-        if isinstance(lines, list) and lines:
-            LINES[key] = [str(x).replace("{", "{{").replace("}", "}}") for x in lines]
+    def esc(lines):
+        return [str(x).replace("{", "{{").replace("}", "}}") for x in lines if x]
+    if "add" in extra or "replace" in extra:
+        for key, lines in extra.get("replace", {}).items():
+            if lines:
+                LINES[key] = esc(lines)
+        for key, lines in extra.get("add", {}).items():
+            pool = LINES.setdefault(key, [])
+            pool += [x for x in esc(lines) if x not in pool]
+    else:  # older flat file: everything replaces
+        for key, lines in extra.items():
+            if isinstance(lines, list) and lines:
+                LINES[key] = esc(lines)
 
 
 def load_cfg():
@@ -380,6 +399,10 @@ class Companion(QWidget):
 
         # speech + reactions
         self.bubble = Bubble()
+        self.was_sleepy = self.is_sleepy()
+        self.cursor_pos, self.cursor_t, self.afk_said = QCursor.pos(), time.monotonic(), False
+        self.quitting = False
+        self.ejected_early = False
         self.next_idle = time.monotonic() + random.uniform(60, 150)
         self.cooldown = {}
         self.sys_acc = 0.0
@@ -707,7 +730,21 @@ class Companion(QWidget):
         self.say("morning" if h < 12 else "afternoon" if h < 18 else "evening")
 
     # ---------- system reactions ----------
+    def check_presence(self):
+        """Morning after her sleepy hours -> wake line; mouse untouched 5 min -> AFK line."""
+        sleepy = self.is_sleepy()
+        if self.was_sleepy and not sleepy:
+            self.say("wake", force=True)
+        self.was_sleepy = sleepy
+        pos = QCursor.pos()
+        now = time.monotonic()
+        if pos != self.cursor_pos:
+            self.cursor_pos, self.cursor_t, self.afk_said = pos, now, False
+        elif not self.afk_said and not sleepy and now - self.cursor_t > AFK_SECONDS:
+            self.afk_said = self.say("afk")  # if she was mid-sentence, try again next check
+
     def check_system(self):
+        self.check_presence()
         if not self.cfg["reactions"]:
             return
         cpu = psutil.cpu_percent(None)
@@ -846,13 +883,19 @@ class Companion(QWidget):
         if not f.exists() or not self.cfg["reactions"]:
             return
         short = name if len(name) <= 28 else name[:25] + "..."
-        if self.say("download", force=True, cooldown=5, name=short):
+        try:
+            big = f.stat().st_size >= 200 * 1024 * 1024
+        except OSError:
+            big = False
+        if self.say("download_big" if big else "download", force=True, cooldown=5, name=short):
             self.celebrate("+50 EXP", CYAN)
             self.add_exp(5)
 
     # ---------- animation ----------
     def tick(self):
         now = time.monotonic()
+        if now - self.last > 60:  # the machine was asleep (suspend), she wakes up with it
+            QTimer.singleShot(1500, lambda: self.say("wake", force=True))
         dt = min(0.05, now - self.last)
         self.last = now
         self.t += dt
@@ -1021,7 +1064,7 @@ class Companion(QWidget):
                                       vy=-25, life=2.0, max=2.0, color=CYAN, size=20, big=True))
             for _ in range(30):
                 self.spawn_particle(burst=True)
-            self.say("levelup", force=True)
+            self.say("levelup_big" if self.cfg["level"] % 10 == 0 else "levelup", force=True)
         self.save()
         return leveled
 
@@ -1049,6 +1092,8 @@ class Companion(QWidget):
 
     def revert(self):
         ph = self.form_phase
+        if ph in ("settle", "lv999", "visor", "active"):
+            self.ejected_early = self.say("sw999_eject_early", force=True)
         if ph in ("cart", "digital"):
             self.form_phase = None
             self.start_glitch(0.2)
@@ -1089,7 +1134,12 @@ class Companion(QWidget):
             self.auto_god = self.t + PHASE_T["settle"] + 4.0  # one ultimate early on
             self.anim_t0 = self.t
             self.next_lv_line = self.t + 9.0
-            self.say("sw999_hello", force=True)
+            if not self.cfg.get("lv999_seen"):
+                self.cfg["lv999_seen"] = True
+                self.save()
+                self.say("sw999_first", force=True)
+            else:
+                self.say("sw999_hello", force=True)
         elif ph == "visor":
             self.say("sw999_on", force=True)
         elif ph == "active":
@@ -1208,7 +1258,9 @@ class Companion(QWidget):
         self.form_phase = None  # rerez finished
         if self.form_movie:
             self.form_movie.stop()
-        self.say("sw999_off", force=True)
+        if not self.ejected_early:  # don't talk over her "already?" line
+            self.say("sw999_off", force=True)
+        self.ejected_early = False
 
     def spawn_cube(self, burst=False, at=None, colors=None, speed=(60, 160)):
         """The floating yellow / pink / cyan / lavender cubes from her transformation."""
@@ -2656,8 +2708,14 @@ class Companion(QWidget):
             self.build_menu().exec(QCursor.pos())
 
     def quit(self):
+        if self.quitting:
+            return
+        self.quitting = True
         self.save()
-        QApplication.quit()
+        if self.isVisible() and self.say("quit", force=True):
+            QTimer.singleShot(2600, QApplication.quit)  # let her finish the goodbye
+        else:
+            QApplication.quit()
 
 
 def main():
