@@ -31,7 +31,6 @@ MOMENTS = {
     "sw999_boop": ["Basic ATK", "Hit by Light Attack", "Enemy Target Found", "Battle Begins: Danger Alert",
                    "Battle Begins: Weakness Break", "Turn Begins", "Hit by Heavy Attack"],
     "sw999_godoff": ["Battle Won", "Elation Skill", "Successful Puzzle-Solving", "Return to Battle"],
-    "sw999_loot": ["Treasure Opening", "Precious Treasure Opening", "Health Recovery"],
     "sw999_off": ["Returning to Town", "Parting"],
 }
 

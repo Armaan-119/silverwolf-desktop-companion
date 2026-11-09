@@ -141,7 +141,6 @@ LINES = {
     "sw999_idle": ["Max level and nothing to fight. Boring.", "This save file is mine now.",
                    "Want me to one-shot your inbox?", "Boop me a few times. I dare you."],
     "sw999_godoff": ["GG.", "Too easy."],
-    "sw999_loot": ["Ooh, loot.", "Drop rates are rigged."],
     "sw999_on": ["Godmode: on. Try to keep up.", "Cartridge loaded. This save file is mine now.",
                  "LV.999. Don't blink.", "Player two has entered the game. ...She's also me."],
     "sw999_boop": ["Godmode. Your clicks deal 0 damage.", "Access denied.", "Input ignored. I'm busy being OP."],
@@ -361,7 +360,6 @@ class Companion(QWidget):
         self.lv_pause = None
         self.auto_god = None
         self.next_lv_line = 0.0
-        self.wfx = []
         self.lv_boops = []
         self.stickers_src, self.stickers = [], []
         self.sticker_cur = self.sticker_prev = STK_IDLE
@@ -868,8 +866,6 @@ class Companion(QWidget):
 
         self.update_form(dt)
         self.update_fx_layer()
-        if self.wfx:
-            self.update_wfx()
         self.update_particles(dt, sleepy)
         for f in self.floaters:
             f["life"] -= dt
@@ -1028,7 +1024,7 @@ class Companion(QWidget):
     #   settle   -> lv999: her animated idle as LV.999 (visor up on her head)
     #   godmode, her ultimate, from lv999 (auto once, or boop her 3x):
     #     visor (pulls it down into the shades) -> active (wings of light,
-    #     boops open a Top Loot Box) -> godoff (wings shatter) -> lv999
+    #     shades) -> godoff (wings shatter) -> lv999
     #   unsettle -> eject (cartridge pops out) -> rerez (back to chibi)
     def transform(self):
         if self.form_phase or not self.isVisible():
@@ -1237,43 +1233,6 @@ class Companion(QWidget):
                                        life=life, max=life, kind="cube", ch="", blink=random.uniform(3, 8),
                                        color=random.choice((PINK, CYAN, QColor("#ffffff"), QColor("#e6dcff"))),
                                        size=random.choice((3, 4, 5, 6))))
-
-    # ---------- Top Loot Box: godmode boops (from her ultimate's card text) ----------
-    def open_loot_box(self):
-        kind = random.choice(("sword", "egg", "bean"))
-        self.wfx = [w for w in self.wfx if self.t - w["t0"] < w["dur"]][-2:]
-        x = self.width() / 2 + random.choice((-1, 1)) * self.img_w * random.uniform(0.3, 0.4)
-        y = PAD + self.img_h * random.uniform(0.25, 0.45)
-        self.wfx.append(dict(kind=kind, t0=self.t, dur=1.4, x=x, y=y, popped=False))
-        self.play("loot")
-        name = {"sword": "BIG FLIPPING SWORD", "egg": "KABOOM EGGSPLOSION", "bean": "FUNKY MUNCH BEAN"}[kind]
-        f = QFont("Source Code Pro")
-        f.setPixelSize(11)
-        f.setBold(True)
-        tw = QFontMetrics(f).horizontalAdvance(name)
-        self.floaters.append(dict(text=name, x=max(2, min(self.width() - tw - 2, x - tw / 2)), y=y - 26, vy=-18,
-                                  life=1.5, max=1.5, color=GOLD, size=11))
-        if random.random() < 0.3:
-            self.say("sw999_loot", cooldown=8)
-
-    def update_wfx(self):
-        for w in self.wfx:
-            u = (self.t - w["t0"]) / w["dur"]
-            if not w["popped"] and u >= 0.6:
-                w["popped"] = True
-                if w["kind"] == "egg":
-                    self.play("boom")
-                    for _ in range(26):
-                        self.spawn_cube(at=(w["x"], w["y"]), colors=BOOM_COLORS, speed=(40, 140))
-                elif w["kind"] == "sword":
-                    self.play("slash")
-                    for _ in range(12):
-                        self.spawn_cube(at=(w["x"], w["y"] + self.img_h * 0.25), colors=SW999_COLORS, speed=(30, 100))
-                else:
-                    self.play("pop")
-                    self.floaters.append(dict(text="+Punchline", x=w["x"] - 30, y=w["y"] - 8, vy=-30,
-                                              life=1.0, max=1.0, color=QColor("#7dff9a"), size=12))
-        self.wfx = [w for w in self.wfx if self.t - w["t0"] < w["dur"]]
 
     # ---------- godmode: she plays around the whole screen ----------
     def start_godmode(self):
@@ -1577,8 +1536,6 @@ class Companion(QWidget):
             self.paint_pixel_scan(p, fk)
         elif phase == "active":
             self.paint_godmode_bar(p, fx, sy, 1 - fk)
-        if self.wfx:
-            self.paint_wfx(p)
 
         self.paint_gum(p, lift)
         self.paint_particles(p)
@@ -1830,82 +1787,6 @@ class Companion(QWidget):
                 visor_at(1 - (k - 0.15) / 0.5, 1)
             else:
                 visor_at(0, 1 - (k - 0.65) / 0.35)
-
-    def paint_wfx(self, p):
-        """Top Loot Box drops, drawn in her window."""
-        for w in self.wfx:
-            u = (self.t - w["t0"]) / w["dur"]
-            x, y = w["x"], w["y"]
-            fade = 1.0 if u < 0.8 else max(0.0, 1 - (u - 0.8) / 0.2)
-            p.save()
-            p.setOpacity(fade)
-            if u < 0.35:  # the box pops open
-                self.draw_loot_box(p, x, y + 10, min(1.0, u / 0.2))
-            v = max(0.0, (u - 0.2) / 0.4)
-            if u >= 0.2:
-                kind = w["kind"]
-                if kind == "sword":
-                    cell = max(3.0, self.img_h / 60)
-                    if u < 0.6:  # flips up out of the box
-                        self.draw_pixel_sword(p, QPointF(x, y - v * 22), -90 + v * 720, self.img_h * 0.32, cell, 1.0)
-                    else:  # and slams down point-first
-                        self.draw_pixel_sword(p, QPointF(x, y - 10), 90, self.img_h * 0.32, cell, 1.0)
-                elif kind == "egg" and u < 0.6:
-                    self.draw_egg(p, x, y - v * 18, v)
-                elif kind == "bean" and u < 0.6:
-                    self.draw_bean(p, x, y - abs(math.sin(v * math.pi * 2)) * 16)
-            p.restore()
-
-    @staticmethod
-    def draw_loot_box(p, x, y, open_):
-        s = 3.0
-        p.setPen(Qt.PenStyle.NoPen)
-        p.fillRect(QRectF(x - 6 * s, y - 4 * s, 12 * s, 8 * s), QColor(58, 29, 92))
-        p.fillRect(QRectF(x - 6 * s, y - 4 * s, 12 * s, s), GOLD)
-        p.fillRect(QRectF(x - s, y - 4 * s, 2 * s, 8 * s), GOLD)
-        p.save()  # lid tips open
-        p.translate(x - 6 * s, y - 4 * s)
-        p.rotate(-70 * open_)
-        p.fillRect(QRectF(0, -3 * s, 12 * s, 3 * s), QColor(80, 44, 124))
-        p.fillRect(QRectF(5 * s, -3 * s, 2 * s, 3 * s), GOLD)
-        p.restore()
-        if open_ > 0.3:  # light spilling out
-            g = QRadialGradient(x, y - 5 * s, 14 * s)
-            g.setColorAt(0, QColor(255, 240, 180, int(200 * open_)))
-            g.setColorAt(1, QColor(255, 211, 107, 0))
-            p.setBrush(g)
-            p.drawEllipse(QPointF(x, y - 5 * s), 14 * s, 14 * s)
-
-    @staticmethod
-    def draw_egg(p, x, y, v):
-        wob = math.sin(v * 30) * 8 * v
-        p.save()
-        p.translate(x, y)
-        p.rotate(wob)
-        p.setPen(QPen(QColor(60, 40, 60), 1.5))
-        p.setBrush(QColor(255, 246, 228))
-        p.drawEllipse(QPointF(0, 0), 9, 12)
-        p.setPen(Qt.PenStyle.NoPen)
-        for dx, dy, c in ((-4, -4, PINK), (3, 1, CYAN), (-2, 5, QColor("#ffe066"))):
-            p.fillRect(QRectF(dx - 1.5, dy - 1.5, 3, 3), c)
-        if v > 0.7:  # cracking
-            p.setPen(QPen(QColor(60, 40, 60), 1.4))
-            p.drawPolyline(QPolygonF([QPointF(-8, -1), QPointF(-4, 2), QPointF(-1, -2), QPointF(3, 2), QPointF(8, -1)]))
-        p.restore()
-
-    @staticmethod
-    def draw_bean(p, x, y):
-        p.save()
-        p.translate(x, y)
-        p.rotate(-20)
-        p.setPen(QPen(QColor(20, 70, 30), 1.4))
-        p.setBrush(QColor(125, 255, 154))
-        p.drawRoundedRect(QRectF(-6, -9, 12, 18), 6, 6)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(20, 40, 25))
-        p.drawEllipse(QPointF(-2.2, -2), 1.3, 1.6)
-        p.drawEllipse(QPointF(2.2, -2), 1.3, 1.6)
-        p.restore()
 
     @staticmethod
     def paint_flash(p, x, y, r, a):
@@ -2609,8 +2490,8 @@ class Companion(QWidget):
         self.play("boop")
         if self.gum_t is None and not self.form_phase and self.cur_file and self.cur_file.name in GUM_POS:
             self.gum_t = self.t
-        if self.form_phase == "active":  # godmode: every boop opens a Top Loot Box
-            self.open_loot_box()
+        if self.form_phase == "active":  # godmode: boops just bounce her
+            pass
         elif self.form_phase == "lv999":  # three quick boops: godmode
             self.lv_boops = [b for b in self.lv_boops if now - b < 2.0] + [now]
             if len(self.lv_boops) >= 3:
