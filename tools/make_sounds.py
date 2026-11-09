@@ -118,6 +118,25 @@ def main():
     save("online", seq([67, 74, 79], 0.06, "square", 0.25))
     save("offline", seq([79, 74, 67], 0.07, "square", 0.25))
 
+    # transform: rising charge (sweep + quickening arpeggio) into a big held chord (SW999)
+    sweep = tone(note(48), 1.3, "square", 0.25, slide=3.0)
+    sweep = np.round(sweep * 4) / 4 * np.linspace(0.2, 1.0, len(sweep))
+    arp = np.concatenate([seq([60, 67, 72, 79], st, "square", 0.125, rel=0.01)
+                          for st in (0.09, 0.07, 0.05, 0.035)])
+    charge = mix(sweep * 0.5, arp * 0.6)
+    burst = tone(4000, 0.12, "noise")
+    chord = mix(*(tone(note(n), 0.6, "square", 0.25, vib=7) for n in (72, 79, 84, 91)))
+    chord = chord * env(len(chord), r=0.45) * 0.7
+    bass = tone(note(36), 0.6, "tri")
+    hit = mix(burst * env(len(burst), r=0.1) * 0.8, chord, bass * env(len(bass), r=0.4))
+    save("transform", np.concatenate([charge, hit]))
+
+    # revert: power-down slide + falling arpeggio
+    down = tone(note(84), 0.5, "square", 0.25, slide=-0.75)
+    down = np.round(down * 3) / 3
+    fall = seq([79, 72, 67, 60], 0.07, "square", 0.25)
+    save("revert", np.concatenate([down * env(len(down), r=0.1) * 0.6, fall]))
+
 
 if __name__ == "__main__":
     main()
