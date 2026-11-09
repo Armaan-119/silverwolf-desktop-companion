@@ -355,6 +355,7 @@ class Companion(QWidget):
         self.form_cache = {}
         self.block_cache = {}
         self.idle_src, self.idle_frames, self.idle_meta, self.idle_off = [], [], {}, (0, 0)
+        self.idle_h = 1
         self.anim_t0 = 0.0
         self.lv_until = 0.0
         self.lv_pause = None
@@ -428,7 +429,9 @@ class Companion(QWidget):
         return sorted(f for f in IMG_DIR.iterdir()
                       if f.suffix.lower() in STATIC_EXTS | ANIM_EXTS)
 
-    def load_images(self):
+    def load_images(self, forms=True):
+        """Load her current look. forms=True also (re)loads the LV.999 art,
+        which is slow (97 animation frames), so only at startup / Reload."""
         files = self.image_files()
         if self.movie:
             self.movie.stop()
@@ -456,7 +459,8 @@ class Companion(QWidget):
             self._src_size = self.static.size()
         src = self.static.toImage() if self.static is not None else self.movie.currentImage()
         self.ground_x = self.find_ground_x(src)
-        self.load_form_image()
+        if forms:
+            self.load_form_image()
         self.apply_size()
 
     @staticmethod
@@ -551,15 +555,20 @@ class Companion(QWidget):
             vx, vy, vw, vh = self.form_meta["visor"]
             self.form_visor_scaled = self.form_visor.scaled(max(1, round(vw * fw)), max(1, round(vh * fh)),
                                                             ignore, smooth)
-        self.idle_frames = []
-        if self.idle_src and "body" in self.idle_meta:
-            # scale so her body matches the still art, feet on the same spot
-            W, H = self.idle_src[0].width(), self.idle_src[0].height()
-            bx, by, bw, bh = self.idle_meta["body"]
-            s = fh / (bh * H)
-            sw_, sh_ = max(1, round(W * s)), max(1, round(H * s))
-            self.idle_frames = [px.scaled(sw_, sh_, ignore, smooth) for px in self.idle_src]
-            self.idle_off = (self.img_w / 2 - (bx + bw / 2) * W * s, self.img_h - (by + bh) * H * s)
+        self.idle_frames = []  # rescaled on first use (see idle_frame), it's 97 frames
+        self.idle_h = fh
+
+    def build_idle_frames(self):
+        """Scale her idle animation so her body matches the still art, feet on the same spot."""
+        if not self.idle_src or "body" not in self.idle_meta:
+            return
+        W, H = self.idle_src[0].width(), self.idle_src[0].height()
+        bx, by, bw, bh = self.idle_meta["body"]
+        s = self.idle_h / (bh * H)
+        sw_, sh_ = max(1, round(W * s)), max(1, round(H * s))
+        self.idle_frames = [px.scaled(sw_, sh_, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation) for px in self.idle_src]
+        self.idle_off = (self.img_w / 2 - (bx + bw / 2) * W * s, self.img_h - (by + bh) * H * s)
 
     def apply_size(self):
         h = max(80, min(1200, int(self.cfg["height"])))
@@ -1709,6 +1718,8 @@ class Companion(QWidget):
     def idle_frame(self):
         """Current frame of her LV.999 idle animation, with its local offset."""
         if not self.idle_frames:
+            self.build_idle_frames()
+        if not self.idle_frames:
             return None
         i = int((self.t - self.anim_t0) * 1000 / max(20, self.idle_meta.get("frame_ms", 100))) % len(self.idle_frames)
         return self.idle_frames[i], self.idle_off[0], self.idle_off[1]
@@ -2581,7 +2592,7 @@ class Companion(QWidget):
         m.addAction("Next image", self.next_image)
         m.addAction("Add image…", self.add_image)
         m.addAction("Open images folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(IMG_DIR))))
-        m.addAction("Reload images", self.load_images)
+        m.addAction("Reload images", lambda: self.load_images())
         m.addSeparator()
         if self.tray:
             ct = QAction("Click-through (toggle from tray)", m, checkable=True)
@@ -2603,10 +2614,12 @@ class Companion(QWidget):
         self.save()
 
     def next_image(self):
+        self.start_glitch(0.4)
+        if self.form_phase or len(self.image_files()) < 2:
+            return  # nothing to switch to (or she's LV.999 right now)
         self.cfg["image_index"] += 1
         self.gum_t = None
-        self.load_images()
-        self.start_glitch(0.4)
+        self.load_images(forms=False)
         self.save()
 
     def add_image(self):
@@ -2617,7 +2630,7 @@ class Companion(QWidget):
             shutil.copy(fn, dest)
             files = self.image_files()
             self.cfg["image_index"] = files.index(dest)
-            self.load_images()
+            self.load_images(forms=False)
             self.save()
 
     def set_click_through(self, on, show=True):
