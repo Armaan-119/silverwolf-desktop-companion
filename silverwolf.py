@@ -76,7 +76,7 @@ FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0
 DEFAULTS = dict(height=300, opacity=1.0, wander=False, glitch=True,
                 particles=True, click_through=False, mirror=False,
                 speech=True, reactions=True, sounds=True, sleepy_hours=[0, 6],
-                exp=0, level=1, sw999_seconds=12, sw999_auto=True,
+                exp=0, level=1, sw999_seconds=12, sw999_auto=True, sw999_play=False,
                 image_index=0, x=None, y=None)
 
 # ------------------------------------------------------------------ lines
@@ -1000,7 +1000,8 @@ class Companion(QWidget):
             self.floaters.append(dict(text="GODMODE", x=self.width() / 2 - 62, y=PAD - 20, vy=-14,
                                       life=2.0, max=2.0, color=PINK, size=20, big=True))
             self.say("sw999_on", force=True)
-            self.start_godmode()
+            if self.cfg.get("sw999_play"):
+                self.start_godmode()
         elif ph == "eject":
             self.play("eject")
             self.end_godmode()
@@ -1049,7 +1050,7 @@ class Companion(QWidget):
             self.play("godmode")
             for _ in range(24):
                 self.spawn_cube(burst=True)
-        if ph == "active":
+        if ph == "active" and self.fxl is not None and self.fxl.isVisible():
             self.update_godmode(dt, k)
         if k < 1:
             return
@@ -2293,6 +2294,7 @@ class Companion(QWidget):
         else:
             m.addAction("Insert cartridge: LV.999  (or boop 10x fast)", self.transform)
         toggle("Surprise LV.999 transformations", "sw999_auto")
+        toggle("Godmode: fly around and attack (experimental)", "sw999_play")
         dur = m.addMenu("Godmode duration")
         for secs in (8, 12, 20, 30, 60):
             a = QAction(f"{secs} s", dur, checkable=True)
