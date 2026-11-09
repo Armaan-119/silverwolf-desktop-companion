@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REF = ROOT / "References"
 OUT = ROOT / "forms" / "sw999_lines.json"
-MAX_LEN = 170  # longer lines make huge bubbles
+MAX_LEN = 400  # her longest (the cartridge story) is ~300; the bubble widens for long ones
 
 # companion situation -> wiki section titles (exact). Everyday situations ADD her
 # lines to the ones already there; the LV.999 moments REPLACE the placeholders.
@@ -39,11 +39,21 @@ ADD = {
     "download": ["Treasure Opening"],
     "download_big": ["Precious Treasure Opening"],
 }
+# the fun ones: her takes on everyone else, and the long stories. She tells
+# these in her idle chatter, both as LV.999 and as everyday Silver Wolf.
+STORIES = ["About Self: \"LV.999\" Cartridge", "About Self: Combat", "Something to Share", "Knowledge",
+           "About ( Trailblazer )", "About Blade", "About Firefly", "About Kafka", "About The Herta",
+           "About Sparxie", "About Yao Guang", "About Ashveil", "About Pearl", "About Evanescia",
+           "About Himeko • Nova", "Added to Team With Ashveil", "Added to Team With Yao Guang",
+           "Added to Team With Sparxie", "Added to Team With Mortenax Blade", "Added to Team With Pearl"]
+ADD["idle"] = STORIES
+
 REPLACE = {
     "sw999_first": ["First Meeting"],                                   # her very first transformation
     "sw999_hello": ["Technique", "Added to Team With Silver Wolf", "Added to Team With The Herta"],
     "sw999_idle": ["Hobbies", "Annoyances", "Chat: Hacking", "Chat: Phantasmoon Games", "About Elio",
-                   "Character Idles", "About Mortenax Blade Non-Existent State", "Chat: Current Situation"],
+                   "Character Idles", "About Mortenax Blade Non-Existent State", "Chat: Current Situation"]
+                  + STORIES,
     "sw999_on": ["Ultimate: Activate", "Enhanced Elation Skill", "Enhanced Basic ATK", "Skill"],
     "sw999_boop": ["Basic ATK", "Hit by Light Attack", "Enemy Target Found", "Turn Begins"],
     "sw999_godoff": ["Elation Skill", "Successful Puzzle-Solving"],
@@ -60,7 +70,8 @@ def clean(text):
     text = re.sub(r"▶\s*\S+", "", text)            # audio links
     text = re.sub(r"\((?:System Sound \d+|2×|Not recorded in Profile)\)", "", text)
     text = re.sub(r"\(\s*Trailblazer\s*\)", "Trailblazer", text)
-    text = re.sub(r"\s+([,.!?…])", r"\1", text)
+    text = re.sub(r"\s+([,.!?…:;])", r"\1", text)
+    text = re.sub(r'"\s+([^"\s][^"]*?)\s*"', r'"\1"', text)  # wiki links leave '" Zero "' padding
     return re.sub(r"\s+", " ", text).strip()
 
 

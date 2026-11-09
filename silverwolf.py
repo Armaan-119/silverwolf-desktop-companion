@@ -214,6 +214,7 @@ def tinted(pix: QPixmap, color: QColor) -> QPixmap:
 # ------------------------------------------------------------------ speech bubble
 class Bubble(QWidget):
     MAX_W = 260
+    WIDE_W = 400  # long stories get a wider bubble instead of a very tall one
 
     def __init__(self):
         super().__init__()
@@ -229,6 +230,7 @@ class Bubble(QWidget):
         self.tag_font = QFont("Source Code Pro")
         self.tag_font.setPixelSize(9)
         self.text = ""
+        self.max_w = self.MAX_W
         self.start = 0.0
         self.until = 0.0
         self.alpha = 0.0
@@ -237,7 +239,8 @@ class Bubble(QWidget):
     def say(self, text, now):
         self.text = text
         fm = QFontMetrics(self.font)
-        r = fm.boundingRect(QRect(0, 0, self.MAX_W, 1000),
+        self.max_w = self.WIDE_W if len(text) > 140 else self.MAX_W
+        r = fm.boundingRect(QRect(0, 0, self.max_w, 1000),
                             Qt.TextFlag.TextWordWrap, text)
         self.text_rect = QRect(14, 22, r.width() + 2, r.height())
         self.setFixedSize(max(110, r.width() + 30), r.height() + 48)
@@ -294,7 +297,7 @@ class Bubble(QWidget):
         p.drawText(self.text_rect, Qt.TextFlag.TextWordWrap, shown)
         if n < len(self.text) and int(now * 6) % 2 == 0:
             fm = QFontMetrics(self.font)
-            p.fillRect(QRectF(self.text_rect.left() + fm.horizontalAdvance(shown.split("\n")[-1]) % self.MAX_W,
+            p.fillRect(QRectF(self.text_rect.left() + fm.horizontalAdvance(shown.split("\n")[-1]) % self.max_w,
                               self.text_rect.top() + 2, 7, fm.height() - 4), PINK)
         p.end()
 
