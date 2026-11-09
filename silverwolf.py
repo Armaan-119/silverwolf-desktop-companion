@@ -270,6 +270,7 @@ class Companion(QWidget):
         self.scaled = None
         self.cur_file = None
         self.img_w, self.img_h = 260, 300
+        self.ground_x = 0.5  # where her feet are, as a fraction of image width
         self.tint_cache = {}
 
         self.t = 0.0
@@ -377,8 +378,22 @@ class Companion(QWidget):
             self.static = QPixmap(str(f))
         if self.static is not None:
             self._src_size = self.static.size()
+        src = self.static.toImage() if self.static is not None else self.movie.currentImage()
+        self.ground_x = self.find_ground_x(src)
         self.load_form_image()
         self.apply_size()
+
+    @staticmethod
+    def find_ground_x(img):
+        """Horizontal centre of the opaque pixels in the bottom 15% of the image,
+        so her shadow sits under her feet instead of under the image centre."""
+        if img.isNull():
+            return 0.5
+        small = img.scaledToWidth(120).convertToFormat(img.Format.Format_ARGB32)
+        w, h = small.width(), small.height()
+        xs = [x for y in range(int(h * 0.85), h) for x in range(w)
+              if small.pixelColor(x, y).alpha() > 20]
+        return (sum(xs) / len(xs) + 0.5) / w if xs else 0.5
 
     def load_form_image(self):
         """Optional custom art for the SW999 form: forms/sw999.(png|gif|webp|...)."""
@@ -1007,16 +1022,19 @@ class Companion(QWidget):
 
         cx = self.width() / 2
         sy = PAD + self.img_h + 26
+        # ground point under her feet (follows mirror and the SW999 scale-up)
+        gx = 1 - self.ground_x if self.cfg["mirror"] else self.ground_x
+        fx = cx + (gx - 0.5) * self.img_w * self.form_scale()
         k = max(0.4, min(1.2, 1.0 + (lift / 80.0)))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(120, 90, 200, int(70 * k)))
         sw = self.img_w * 0.45 * k
-        p.drawEllipse(QPointF(cx, sy), sw / 2, 7 * k)
+        p.drawEllipse(QPointF(fx, sy), sw / 2, 7 * k)
 
         phase, fk = self.form_progress()
         amount = self.form_amount()
         if amount > 0:
-            self.paint_floor_rings(p, cx, sy, amount)
+            self.paint_floor_rings(p, fx, sy, amount)
 
         pix = self.frame()
         if pix is None or pix.isNull():
@@ -1079,7 +1097,7 @@ class Companion(QWidget):
         if phase == "charge":
             self.paint_charge_hud(p, cx, PAD + self.img_h / 2 + lift, fk)
         elif phase == "active":
-            self.paint_timer(p, cx, sy, 1 - fk)
+            self.paint_timer(p, fx, sy, 1 - fk)
 
         self.paint_gum(p, lift)
         self.paint_particles(p)
@@ -1195,6 +1213,7 @@ class Companion(QWidget):
         p.save()
         p.setBrush(Qt.BrushStyle.NoBrush)
         rx = self.img_w * 0.42 * (0.5 + 0.5 * amount)
+        rx = min(rx, cx - 4, self.width() - cx - 4)  # stay inside the window
         for i, (scale, speed, col) in enumerate(((1.0, 30, CYAN), (0.72, -45, GOLD))):
             c = QColor(col)
             c.setAlphaF(0.8 * amount)
