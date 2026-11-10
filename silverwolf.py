@@ -81,8 +81,11 @@ MAGIC_RIBBONS = False  # spiralling ribbons of light (off for now)
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
-#   slot = top of her handheld, screen = its screen, back = wing root.
-FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0.73), back=(0.42, 0.56))}
+#   slot = top of her handheld, screen = its screen, back = wing root,
+#   body = middle of her body (the "?" bubble makes the picture lopsided);
+#   LV.999 is drawn centred on it so she transforms in place.
+FORM_ANCHORS = {"silverwolfchibi.png": dict(slot=(0.17, 0.685), screen=(0.165, 0.73), back=(0.42, 0.56),
+                                            body=(0.36, 0.5))}
 
 DEFAULTS = dict(height=300, opacity=1.0, wander=False, glitch=True,
                 particles=True, click_through=False, mirror=False,
@@ -1239,7 +1242,7 @@ class Companion(QWidget):
         if ph == "bloom" and k >= SCAN_END and not self.form_flag:  # scan done: LV.999
             self.form_flag = True
             self.play("levelup")
-            cx, cy = self.width() / 2, PAD + self.img_h * 0.3
+            cx, cy = self.magic_wx(ph, k), PAD + self.img_h * 0.3
             for _ in range(30):
                 self.spawn_spark(at=(cx, cy))
             self.floaters.append(dict(text="LV.999", x=cx - 40, y=PAD - 4, vy=-18,
@@ -1488,18 +1491,26 @@ class Companion(QWidget):
         bare=True gives the version without the visor on her head."""
         if self.chibi_mode():
             art = self.stickers[self.sticker_cur]
-            return art, (self.img_w - art.width()) / 2, self.img_h - art.height()
+            return art, (self.img_w - art.width()) / 2 + self.form_dx(), self.img_h - art.height()
         if self.has_form_art():
             art = self.form_movie.currentPixmap() if self.form_movie else self.form_scaled
             if bare and self.form_bare_scaled is not None:
                 art = self.form_bare_scaled
-            return art, (self.img_w - art.width()) / 2, self.img_h - art.height()
+            return art, (self.img_w - art.width()) / 2 + self.form_dx(), self.img_h - art.height()
         key = pix.cacheKey()
         if key not in self.form_cache:
             if len(self.form_cache) > 64:
                 self.form_cache.clear()
             self.form_cache[key] = self.build_godmode_tint(pix)
         return self.form_cache[key], 0, 0
+
+    def body_x(self):
+        """Middle of her body in the current picture, as a fraction of its width."""
+        return self.anchor_pt("body", (0.5, 0.5))[0] / max(1, self.img_w)
+
+    def form_dx(self):
+        """Sideways shift that puts LV.999 where her chibi body is."""
+        return (self.body_x() - 0.5) * self.img_w
 
     def form_point(self, fx, fy):
         """A point given as fractions of the LV.999 art -> local coordinates."""
@@ -1570,7 +1581,9 @@ class Companion(QWidget):
         cx = self.width() / 2
         sy = PAD + self.img_h + 26
         # ground point under her feet (follows mirror)
-        gx = 0.5 if big else (1 - self.ground_x if self.cfg["mirror"] else self.ground_x)
+        gx = self.body_x() if big else self.ground_x
+        if self.cfg["mirror"]:
+            gx = 1 - gx
         fx = cx + (gx - 0.5) * self.img_w
         k = max(0.4, min(1.2, 1.0 + (lift / 80.0)))
         p.setPen(Qt.PenStyle.NoPen)
@@ -1807,17 +1820,19 @@ class Companion(QWidget):
         u = min(1.0, (self.t - self.sticker_t) / 0.22)
         cur, prev = self.stickers[self.sticker_cur], self.stickers[self.sticker_prev]
 
+        dx = self.form_dx()
+
         def place(px):
-            return (self.img_w - px.width()) / 2, self.img_h - px.height()
+            return (self.img_w - px.width()) / 2 + dx, self.img_h - px.height()
         if phase == "active":
             self.paint_aura(p, cur, *place(cur))
         base = p.opacity()
         p.save()
         if u < 1:  # bounce about her base and crossfade while the sticker swaps
             sc = 1 + 0.1 * math.sin(u * math.pi)
-            p.translate(self.img_w / 2, self.img_h)
+            p.translate(self.img_w / 2 + dx, self.img_h)
             p.scale(sc, sc)
-            p.translate(-self.img_w / 2, -self.img_h)
+            p.translate(-self.img_w / 2 - dx, -self.img_h)
             p.setOpacity(base * (1 - u))
             self.draw_pix(p, prev, *place(prev), glitching)
             p.setOpacity(base * u)
@@ -2088,11 +2103,9 @@ class Companion(QWidget):
         return u * u * (3 - 2 * u)
 
     def magic_gx(self, phase, k):
-        """Centre of the magic (fraction of image width, unmirrored): under her
-        feet while she's chibi, sliding to the middle as LV.999 scans in."""
-        if phase == "bloom":
-            return self.ground_x + (0.5 - self.ground_x) * self.ease(k / SCAN_END)
-        return self.ground_x
+        """Centre of the magic (fraction of image width, unmirrored): the middle
+        of her body, which is also where LV.999 appears, so nothing slides."""
+        return self.body_x()
 
     def magic_wx(self, phase, k):
         """magic_gx in window x."""
@@ -2292,7 +2305,7 @@ class Companion(QWidget):
             p.drawPixmap(QPointF(random.uniform(-5, 5), 0), self.get_tint(old, white))
             p.restore()
             # the scanner line itself
-            cx = self.img_w / 2
+            cx = self.img_w * self.body_x()
             hw = self.img_w * 0.62
             g = QLinearGradient(0, ly - 7, 0, ly + 7)
             g.setColorAt(0, QColor(255, 140, 220, 0))
