@@ -66,13 +66,16 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "slot": 0.3, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
+PHASE_T = {"cart": 0.9, "slot": 0.3, "magic": 1.9, "bloom": 1.3, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
            "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
 # LV.999 chibi look: her official chat stickers in forms/sw999_chibi/ (01-04, git-ignored).
 #   01 gum + handheld (default)   02 pointing (booped)
 #   03 star shades, arms crossed (godmode)   04 giant pixel-shades bubble (godmode trigger)
 CHIBI_META = dict(back=(0.5, 0.62), gauntlet=(0.48, 0.80), hand=(0.48, 0.80))
 STK_IDLE, STK_POINT, STK_GOD, STK_BUBBLE = 0, 1, 2, 3
+# magical girl transformation: ribbons, sparkles, a magic circle, white-silhouette bloom
+MAGIC_COLORS = [PINK, QColor("#ffb3ec"), CYAN, QColor("#ffffff"), QColor("#c9b6ff"), QColor("#ffe066")]
+BLOOM_HIT = 0.5  # point in the bloom phase where the light bursts and LV.999 appears
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
@@ -1097,10 +1100,10 @@ class Companion(QWidget):
         ph = self.form_phase
         if ph in ("settle", "lv999", "visor", "active"):
             self.ejected_early = self.say("sw999_eject_early", force=True)
-        if ph in ("cart", "slot", "digital"):
+        if ph in ("cart", "slot", "digital", "magic"):
             self.form_phase = None
             self.start_glitch(0.2)
-        elif ph == "derez":
+        elif ph in ("derez", "bloom"):
             self.set_phase("rerez")
         elif ph in ("insert", "settle", "lv999"):
             self.set_phase("unsettle")
@@ -1126,6 +1129,8 @@ class Companion(QWidget):
         self.form_flag = False
         if ph == "digital":
             self.play("transform")  # insert click + boot jingle (cutscene version)
+        elif ph == "magic":
+            self.play("transform")
         elif ph == "derez":
             self.play("glitch")
             self.start_glitch(0.15)
@@ -1190,7 +1195,7 @@ class Companion(QWidget):
         """Is the full-size LV.999 body what's on screen right now?"""
         ph, k = self.form_progress()
         return ph in ("insert", "settle", "lv999", "visor", "active", "godoff", "unsettle", "eject") \
-            or (ph == "derez" and k >= 0.5) or (ph == "rerez" and k < 0.5)
+            or (ph in ("derez", "bloom") and k >= 0.5) or (ph == "rerez" and k < 0.5)
 
     def update_sticker(self, ph, k):
         """Pick the chibi sticker for the moment, and remember when it changed."""
@@ -1219,6 +1224,18 @@ class Companion(QWidget):
         if ph == "digital" or (ph == "active" and random.random() < dt * 3):
             for _ in range(int(dt * 30) + (random.random() < (dt * 30) % 1)):
                 self.spawn_cube()
+        if ph == "magic" or (ph == "bloom" and k < BLOOM_HIT):
+            rate = dt * (25 + 45 * k)
+            for _ in range(int(rate) + (random.random() < rate % 1)):
+                self.spawn_spark()
+        if ph == "bloom" and k >= BLOOM_HIT and not self.form_flag:  # burst of light: LV.999
+            self.form_flag = True
+            self.play("levelup")
+            cx, cy = self.width() / 2, PAD + self.img_h * 0.45
+            for _ in range(46):
+                self.spawn_spark(at=(cx, cy))
+            self.floaters.append(dict(text="LV.999", x=cx - 40, y=PAD - 4, vy=-18,
+                                      life=1.6, max=1.6, color=PINK, size=20, big=True))
         if ph == "insert" and k >= INSERT_HIT and not self.form_flag:  # cartridge locks into the gauntlet
             self.form_flag = True
             self.play("transform")
@@ -1250,7 +1267,7 @@ class Companion(QWidget):
             self.update_godmode(dt, k)
         if k < 1:
             return
-        nxt = {"cart": "slot", "slot": "digital", "digital": "derez", "derez": "settle", "insert": "settle",
+        nxt = {"cart": "slot", "slot": "magic", "magic": "bloom", "bloom": "settle", "digital": "derez", "derez": "settle", "insert": "settle",
                "settle": "lv999", "visor": "active", "active": "godoff", "lv999": "unsettle",
                "unsettle": "eject", "eject": "rerez"}.get(ph)
         if ph == "godoff":
@@ -1278,6 +1295,22 @@ class Companion(QWidget):
         self.particles.append(dict(x=x, y=y, vx=vx, vy=vy, life=life, max=life, kind="cube",
                                    color=random.choice(colors or CUBE_COLORS), ch="",
                                    size=random.choice((4, 5, 6, 8)), blink=random.uniform(3, 7)))
+
+    def spawn_spark(self, at=None):
+        """Magical girl sparkles: rise out of the magic circle, or burst from a point."""
+        if at:
+            ang, sp = random.uniform(0, 2 * math.pi), random.uniform(70, 220)
+            x, y = at
+            vx, vy = math.cos(ang) * sp, math.sin(ang) * sp
+            life = random.uniform(0.6, 1.3)
+        else:
+            x = self.width() / 2 + random.uniform(-0.48, 0.48) * self.img_w
+            y = PAD + self.img_h + random.uniform(10, 30)
+            vx, vy = random.uniform(-12, 12), random.uniform(-150, -60)
+            life = random.uniform(0.8, 1.6)
+        self.particles.append(dict(x=x, y=y, vx=vx, vy=vy, life=life, max=life, kind="spark",
+                                   color=random.choice(MAGIC_COLORS), ch="",
+                                   size=random.choice((4, 5, 6, 8, 10)), blink=random.uniform(5, 11)))
 
     def local_to_window(self, lx, ly):
         m = -1 if self.cfg["mirror"] else 1
@@ -1537,6 +1570,9 @@ class Companion(QWidget):
 
         if phase == "digital":
             self.paint_circuits(p, fk)
+        if phase in ("magic", "bloom"):
+            self.paint_magic_circle(p, fx, sy, phase, fk)
+            lift -= self.magic_rise(phase, fk)
 
         pix = self.frame()
         if pix is None or pix.isNull():
@@ -1563,7 +1599,11 @@ class Companion(QWidget):
 
             bare = art and not self.chibi_mode() and self.form_bare_scaled is not None \
                 and phase in ("visor", "active", "godoff")
-            if phase == "derez":
+            if phase in ("magic", "bloom"):
+                self.paint_ribbons(p, phase, fk, front=False)
+                self.paint_magic_body(p, phase, fk, pix)
+                self.paint_ribbons(p, phase, fk, front=True)
+            elif phase == "derez":
                 if fk < 0.5:
                     self.paint_blocks(p, pix, 0, 0, fk * 2, gathering=False)
                 else:
@@ -1588,7 +1628,7 @@ class Companion(QWidget):
                 self.draw_pix(p, pix, 0, 0, glitching)
 
             # in front of her
-            if phase in ("slot", "digital") or (phase == "derez" and fk < 0.5):
+            if phase in ("slot", "digital", "magic") or (phase == "derez" and fk < 0.5):
                 self.paint_screen_glow(p, phase, fk)
             if art and not self.chibi_mode() and (phase in ("visor", "active")
                                                   or (phase == "insert" and fk >= INSERT_HIT)):
@@ -1600,6 +1640,8 @@ class Companion(QWidget):
 
         if phase == "digital":
             self.paint_pixel_scan(p, fk)
+        elif phase == "bloom":
+            self.paint_bloom_flash(p, cx, PAD + self.img_h * 0.45 + lift, fk)
         elif phase == "active":
             self.paint_godmode_bar(p, fx, sy, 1 - fk)
 
@@ -1912,7 +1954,7 @@ class Companion(QWidget):
         """Her handheld lights up once the cartridge is in, and shows 999."""
         sx, sy = self.anchor_pt("screen", (0.5, 0.75))
         r = 0.05 * self.img_h
-        flick = 0.6 + 0.4 * math.sin(self.t * 23) if phase == "digital" else 0.8
+        flick = 0.6 + 0.4 * math.sin(self.t * 23) if phase in ("digital", "magic") else 0.8
         g = QRadialGradient(sx, sy, r * 2.2)
         c0, c1 = QColor(CYAN), QColor(CYAN)
         c0.setAlpha(int(170 * flick))
@@ -1923,7 +1965,7 @@ class Companion(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
         p.drawEllipse(QPointF(sx, sy), r * 2.2, r * 2.2)
-        if phase == "digital":
+        if phase in ("digital", "magic"):
             f = QFont("Source Code Pro")
             f.setPixelSize(max(6, int(r * 0.9)))
             f.setBold(True)
@@ -1947,7 +1989,7 @@ class Companion(QWidget):
         return self.img_w * 0.7, -PAD * 0.3 + math.sin(self.t * 2.2) * 4
 
     def paint_cartridge(self, p, phase, k):
-        if phase in ("cart", "slot", "digital", "derez"):
+        if phase in ("cart", "slot", "digital", "derez", "magic", "bloom"):
             return self.paint_cartridge_handheld(p, phase, k)
         if phase not in ("insert", "eject"):
             return
@@ -2004,7 +2046,7 @@ class Companion(QWidget):
     def paint_cartridge_handheld(self, p, phase, k):
         """Cutscene version: tossed in, lands on her handheld, clicks into it,
         then breaks up with her when she de-rezzes."""
-        if phase == "derez" and k >= 0.5:
+        if phase in ("derez", "bloom") and k >= 0.5:
             return
         slot_x, slot_y = self.anchor_pt("slot", (0.5, 0.7))
         cw, ch = self.cart_size()
@@ -2018,7 +2060,7 @@ class Companion(QWidget):
             clip = False
         elif phase == "slot":  # chk
             y = slot_y + (seated - slot_y) * (k * k)
-        elif phase == "derez":
+        elif phase in ("derez", "bloom"):
             alpha = max(0.0, 1 - k * 2.5)
         p.save()
         p.setOpacity(alpha)
@@ -2027,6 +2069,171 @@ class Companion(QWidget):
         p.translate(x, y)
         p.rotate(ang)
         self.draw_cart_shape(p, cw, ch)
+        p.restore()
+
+    # ---------- magical girl transformation ----------
+    @staticmethod
+    def ease(u):
+        u = max(0.0, min(1.0, u))
+        return u * u * (3 - 2 * u)
+
+    def magic_rise(self, phase, k):
+        """She floats up off the ground while she transforms."""
+        h = self.img_h * 0.06
+        if phase == "magic":
+            return h * self.ease(k / 0.5)
+        return h * (1 - self.ease((k - 0.6) / 0.4))
+
+    def paint_magic_circle(self, p, x, y, phase, k):
+        """A spinning pink/cyan magic circle under her feet, with a star in it."""
+        if phase == "magic":
+            grow, alpha = self.ease(k / 0.35), 1.0
+        else:
+            grow, alpha = 1.0 + 0.25 * self.ease((k - BLOOM_HIT) / 0.5), 1 - self.ease((k - 0.4) / 0.6)
+        if alpha <= 0 or grow <= 0:
+            return
+        rx = self.img_w * 0.5 * grow
+        ry = rx * 0.26
+        spin = self.t * 1.6
+        p.save()
+        p.setOpacity(alpha)
+        # light column rising out of the circle
+        g = QLinearGradient(0, y, 0, y - self.img_h * 1.1)
+        c = QColor(PINK)
+        c.setAlpha(int(70 * min(1.0, grow)))
+        g.setColorAt(0, c)
+        c = QColor(CYAN)
+        c.setAlpha(0)
+        g.setColorAt(1, c)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        topy = y - self.img_h * 1.1
+        for wf, af in ((0.8, 0.35), (0.55, 0.6), (0.3, 1.0)):  # soft edges: stacked tapers
+            p.setOpacity(alpha * af)
+            p.drawPolygon(QPolygonF([QPointF(x - rx * wf, y), QPointF(x + rx * wf, y),
+                                     QPointF(x + rx * wf * 0.6, topy), QPointF(x - rx * wf * 0.6, topy)]))
+        p.setOpacity(alpha)
+        # glow disc
+        rg = QRadialGradient(x, y, rx)
+        c = QColor(255, 179, 236, 110)
+        rg.setColorAt(0, c)
+        c = QColor(94, 242, 255, 0)
+        rg.setColorAt(1, c)
+        p.setBrush(rg)
+        p.drawEllipse(QPointF(x, y), rx, ry)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        def pt(r, a):
+            return QPointF(x + math.cos(a) * r * rx, y + math.sin(a) * r * ry)
+        p.setPen(QPen(QColor(255, 140, 220, 230), 2))
+        p.drawEllipse(QPointF(x, y), rx, ry)
+        p.setPen(QPen(QColor(150, 245, 255, 210), 1.2))
+        p.drawEllipse(QPointF(x, y), rx * 0.82, ry * 0.82)
+        p.drawEllipse(QPointF(x, y), rx * 0.42, ry * 0.42)
+        # five-point star, drawn in one stroke
+        star = QPolygonF([pt(0.82, -spin + i * 4 * math.pi / 5) for i in range(5)])
+        p.setPen(QPen(QColor(255, 210, 245, 220), 1.4))
+        p.drawPolygon(star)
+        # little runes/dots running around the outer ring
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(12):
+            q = pt(0.91, spin * 0.7 + i * math.pi / 6)
+            p.setBrush(QColor(255, 255, 255, 230) if i % 3 == 0 else QColor(94, 242, 255, 200))
+            p.drawEllipse(q, 1.8 if i % 3 == 0 else 1.2, 1.8 if i % 3 == 0 else 1.2)
+        p.restore()
+
+    def paint_ribbons(self, p, phase, k, front):
+        """Three ribbons of light spiralling up around her. Drawn twice: the
+        part behind her first, the part in front of her after her body."""
+        cx = self.img_w / 2
+        top, bot = self.img_h * 0.02, self.img_h * 1.02
+        if phase == "magic":
+            grow = self.ease(k / 0.75)
+            R, alpha = self.img_w * 0.46, 1.0
+        else:
+            grow = 1.0
+            if k < BLOOM_HIT:  # wrap in tight around her
+                R = self.img_w * (0.46 - 0.2 * self.ease(k / BLOOM_HIT))
+                alpha = 1.0
+            else:  # fling outward and fade
+                u = (k - BLOOM_HIT) / (1 - BLOOM_HIT)
+                R = self.img_w * (0.26 + 0.5 * u)
+                alpha = max(0.0, 1 - u * 1.6)
+        if grow <= 0 or alpha <= 0:
+            return
+        cols = [(PINK, CYAN), (CYAN, QColor("#c9b6ff")), (QColor("#ffb3ec"), QColor("#ffffff"))]
+        n = 36
+        p.save()
+        for i in range(3):
+            c0, c1 = cols[i]
+            prev = None
+            for j in range(n + 1):
+                s = grow * j / n
+                y = bot - s * (bot - top)
+                a = i * 2 * math.pi / 3 + s * 2.3 * 2 * math.pi + self.t * 4.5
+                x = cx + R * math.sin(a) * (0.75 + 0.25 * (1 - s))
+                depth = math.cos(a)
+                if prev is not None and (depth >= 0) == front:
+                    t = j / n
+                    c = QColor(int(c0.red() + (c1.red() - c0.red()) * t),
+                               int(c0.green() + (c1.green() - c0.green()) * t),
+                               int(c0.blue() + (c1.blue() - c0.blue()) * t))
+                    c.setAlphaF(alpha * (0.95 if front else 0.45))
+                    p.setPen(QPen(c, 2.0 + 3.0 * (1 - abs(0.5 - t) * 2), Qt.PenStyle.SolidLine,
+                                  Qt.PenCapStyle.RoundCap))
+                    p.drawLine(prev, QPointF(x, y))
+                prev = QPointF(x, y)
+            if front and phase == "magic" and grow < 1:  # bright tip leading each ribbon
+                self.paint_flash(p, prev.x(), prev.y(), 7, alpha)
+        p.restore()
+
+    def paint_magic_body(self, p, phase, k, pix):
+        """Her body glows white while she transforms, then the light peels off
+        to reveal LV.999."""
+        if phase == "magic" or k < BLOOM_HIT:
+            art, ox, oy = pix, 0, 0
+            white = 0.85 * self.ease((k - 0.35) / 0.6) if phase == "magic" else 0.85 + 0.15 * (k / BLOOM_HIT)
+            pulse = 1.0 + (0.04 * math.sin(self.t * 18) * (k / BLOOM_HIT) if phase == "bloom" else 0)
+        else:
+            art, ox, oy = self.form_sprite(pix)
+            white = 1 - self.ease((k - BLOOM_HIT) / (1 - BLOOM_HIT) * 1.3)
+            pulse = 1.0
+        p.save()
+        if pulse != 1.0:
+            px, py = ox + art.width() / 2, oy + art.height() / 2
+            p.translate(px, py)
+            p.scale(pulse, pulse)
+            p.translate(-px, -py)
+        if white < 1:
+            p.drawPixmap(QPointF(ox, oy), art)
+        if white > 0:
+            p.setOpacity(white)
+            p.drawPixmap(QPointF(ox, oy), self.get_tint(art, QColor(255, 236, 250)))
+        p.restore()
+
+    def paint_bloom_flash(self, p, x, y, k):
+        """The burst of light when LV.999 appears."""
+        a = max(0.0, 1 - abs(k - BLOOM_HIT) / 0.2)
+        if a <= 0:
+            return
+        r = self.img_h * (0.35 + 0.5 * self.ease((k - 0.3) / 0.4))
+        p.save()
+        g = QRadialGradient(x, y, r)
+        g.setColorAt(0, QColor(255, 255, 255, int(255 * a)))
+        g.setColorAt(0.4, QColor(255, 179, 236, int(170 * a)))
+        g.setColorAt(1, QColor(94, 242, 255, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QPointF(x, y), r, r)
+        # rays
+        p.setBrush(QColor(255, 214, 244, int(130 * a)))
+        for i in range(12):
+            ang = i * math.pi / 6 + self.t * 0.8
+            L = r * (1.3 if i % 2 else 0.95)
+            w = 0.05
+            p.drawPolygon(QPolygonF([QPointF(x, y),
+                                     QPointF(x + math.cos(ang - w) * L, y + math.sin(ang - w) * L),
+                                     QPointF(x + math.cos(ang + w) * L, y + math.sin(ang + w) * L)]))
         p.restore()
 
     def paint_gauntlet_glow(self, p, phase, k):
@@ -2504,6 +2711,14 @@ class Companion(QWidget):
                 p.setPen(c)
                 p.drawText(QPointF(q["x"], q["y"]), q["ch"])
                 p.setPen(Qt.PenStyle.NoPen)
+            elif q["kind"] == "spark":  # four-point twinkle
+                s = q["size"] * (0.7 + 0.3 * math.sin(self.t * q["blink"]))
+                x, y, n = q["x"], q["y"], s * 0.22
+                p.setBrush(c)
+                p.drawPolygon(QPolygonF([QPointF(x, y - s), QPointF(x + n, y - n), QPointF(x + s, y),
+                                         QPointF(x + n, y + n), QPointF(x, y + s), QPointF(x - n, y + n),
+                                         QPointF(x - s, y), QPointF(x - n, y - n)]))
+                p.setBrush(Qt.BrushStyle.NoBrush)
             elif q["kind"] == "cube":  # little lit cube: light top and left faces
                 s = q["size"]
                 r = QRectF(q["x"] - s / 2, q["y"] - s / 2, s, s)
