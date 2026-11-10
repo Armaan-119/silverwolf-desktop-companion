@@ -66,7 +66,7 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "slot": 0.3, "magic": 1.9, "bloom": 1.8, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
+PHASE_T = {"cart": 0.9, "slot": 0.3, "magic": 1.9, "bloom": 3.2, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
            "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
 # LV.999 chibi look: her official chat stickers in forms/sw999_chibi/ (01-04, git-ignored).
 #   01 gum + handheld (default)   02 pointing (booped)
@@ -76,7 +76,8 @@ STK_IDLE, STK_POINT, STK_GOD, STK_BUBBLE = 0, 1, 2, 3
 # magical girl transformation: ribbons, sparkles, a magic circle, white-silhouette bloom
 MAGIC_COLORS = [PINK, QColor("#ffb3ec"), CYAN, QColor("#ffffff"), QColor("#c9b6ff"), QColor("#ffe066")]
 BLOOM_HIT = 0.5  # point in the bloom phase where LV.999 counts as on screen
-SCAN_END = 0.82  # the white scanner reaches the top of her here
+SCAN_END = 0.85  # the white scanner reaches the top of her here
+MAGIC_RIBBONS = False  # spiralling ribbons of light (off for now)
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
@@ -2178,6 +2179,8 @@ class Companion(QWidget):
     def paint_ribbons(self, p, phase, k, front):
         """Three ribbons of light spiralling up around her. Drawn twice: the
         part behind her first, the part in front of her after her body."""
+        if not MAGIC_RIBBONS:
+            return
         cx = self.img_w * self.magic_gx(phase, k)
         top, bot = self.img_h * 0.02, self.img_h * 1.02
         if phase == "magic":
