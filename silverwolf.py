@@ -66,7 +66,7 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "slot": 0.3, "magic": 1.9, "bloom": 1.3, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
+PHASE_T = {"cart": 0.9, "slot": 0.3, "magic": 1.9, "bloom": 1.8, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
            "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
 # LV.999 chibi look: her official chat stickers in forms/sw999_chibi/ (01-04, git-ignored).
 #   01 gum + handheld (default)   02 pointing (booped)
@@ -75,7 +75,8 @@ CHIBI_META = dict(back=(0.5, 0.62), gauntlet=(0.48, 0.80), hand=(0.48, 0.80))
 STK_IDLE, STK_POINT, STK_GOD, STK_BUBBLE = 0, 1, 2, 3
 # magical girl transformation: ribbons, sparkles, a magic circle, white-silhouette bloom
 MAGIC_COLORS = [PINK, QColor("#ffb3ec"), CYAN, QColor("#ffffff"), QColor("#c9b6ff"), QColor("#ffe066")]
-BLOOM_HIT = 0.5  # point in the bloom phase where the light bursts and LV.999 appears
+BLOOM_HIT = 0.5  # point in the bloom phase where LV.999 counts as on screen
+SCAN_END = 0.82  # the white scanner reaches the top of her here
 INSERT_HIT = 0.45  # point in the insert phase where the cartridge locks into her gauntlet
 BOOM_COLORS = [QColor("#ffb020"), QColor("#ff6a00"), QColor("#ffe066"), PINK, QColor("#ffffff")]
 # Where things are on each chibi image, as fractions of the image (x, y):
@@ -1224,15 +1225,21 @@ class Companion(QWidget):
         if ph == "digital" or (ph == "active" and random.random() < dt * 3):
             for _ in range(int(dt * 30) + (random.random() < (dt * 30) % 1)):
                 self.spawn_cube()
-        if ph == "magic" or (ph == "bloom" and k < BLOOM_HIT):
+        if ph == "magic":
             rate = dt * (25 + 45 * k)
             for _ in range(int(rate) + (random.random() < rate % 1)):
                 self.spawn_spark()
-        if ph == "bloom" and k >= BLOOM_HIT and not self.form_flag:  # burst of light: LV.999
+        if ph == "bloom" and k < SCAN_END:  # sparkles shed off the scan line
+            wy = PAD + self.scan_y(k) + self.lift() - self.magic_rise(ph, k)
+            rate = dt * 60
+            for _ in range(int(rate) + (random.random() < rate % 1)):
+                x = self.width() / 2 + random.uniform(-0.45, 0.45) * self.img_w
+                self.spawn_spark(at=(x, wy), speed=(20, 70))
+        if ph == "bloom" and k >= SCAN_END and not self.form_flag:  # scan done: LV.999
             self.form_flag = True
             self.play("levelup")
-            cx, cy = self.width() / 2, PAD + self.img_h * 0.45
-            for _ in range(46):
+            cx, cy = self.width() / 2, PAD + self.img_h * 0.3
+            for _ in range(30):
                 self.spawn_spark(at=(cx, cy))
             self.floaters.append(dict(text="LV.999", x=cx - 40, y=PAD - 4, vy=-18,
                                       life=1.6, max=1.6, color=PINK, size=20, big=True))
@@ -1296,15 +1303,17 @@ class Companion(QWidget):
                                    color=random.choice(colors or CUBE_COLORS), ch="",
                                    size=random.choice((4, 5, 6, 8)), blink=random.uniform(3, 7)))
 
-    def spawn_spark(self, at=None):
+    def spawn_spark(self, at=None, speed=(70, 220)):
         """Magical girl sparkles: rise out of the magic circle, or burst from a point."""
         if at:
-            ang, sp = random.uniform(0, 2 * math.pi), random.uniform(70, 220)
+            ang, sp = random.uniform(0, 2 * math.pi), random.uniform(*speed)
             x, y = at
             vx, vy = math.cos(ang) * sp, math.sin(ang) * sp
             life = random.uniform(0.6, 1.3)
         else:
-            x = self.width() / 2 + random.uniform(-0.48, 0.48) * self.img_w
+            ph, k = self.form_progress()
+            x = (self.magic_wx(ph, k) if ph in ("magic", "bloom") else self.width() / 2) \
+                + random.uniform(-0.48, 0.48) * self.img_w
             y = PAD + self.img_h + random.uniform(10, 30)
             vx, vy = random.uniform(-12, 12), random.uniform(-150, -60)
             life = random.uniform(0.8, 1.6)
@@ -1571,7 +1580,7 @@ class Companion(QWidget):
         if phase == "digital":
             self.paint_circuits(p, fk)
         if phase in ("magic", "bloom"):
-            self.paint_magic_circle(p, fx, sy, phase, fk)
+            self.paint_magic_circle(p, self.magic_wx(phase, fk), sy, phase, fk)
             lift -= self.magic_rise(phase, fk)
 
         pix = self.frame()
@@ -2077,6 +2086,30 @@ class Companion(QWidget):
         u = max(0.0, min(1.0, u))
         return u * u * (3 - 2 * u)
 
+    def magic_gx(self, phase, k):
+        """Centre of the magic (fraction of image width, unmirrored): under her
+        feet while she's chibi, sliding to the middle as LV.999 scans in."""
+        if phase == "bloom":
+            return self.ground_x + (0.5 - self.ground_x) * self.ease(k / SCAN_END)
+        return self.ground_x
+
+    def magic_wx(self, phase, k):
+        """magic_gx in window x."""
+        g = self.magic_gx(phase, k)
+        return self.width() / 2 + ((1 - g if self.cfg["mirror"] else g) - 0.5) * self.img_w
+
+    def scan_span(self):
+        """(top, bottom) the scanner sweeps over, in local coordinates."""
+        pix = self.frame()
+        top = 0.0
+        if pix is not None and not pix.isNull():
+            top = min(0.0, self.form_sprite(pix)[2])
+        return top - 6, self.img_h + 6
+
+    def scan_y(self, k):
+        top, bot = self.scan_span()
+        return bot - self.ease(k / SCAN_END) * (bot - top)
+
     def magic_rise(self, phase, k):
         """She floats up off the ground while she transforms."""
         h = self.img_h * 0.06
@@ -2145,20 +2178,16 @@ class Companion(QWidget):
     def paint_ribbons(self, p, phase, k, front):
         """Three ribbons of light spiralling up around her. Drawn twice: the
         part behind her first, the part in front of her after her body."""
-        cx = self.img_w / 2
+        cx = self.img_w * self.magic_gx(phase, k)
         top, bot = self.img_h * 0.02, self.img_h * 1.02
         if phase == "magic":
             grow = self.ease(k / 0.75)
             R, alpha = self.img_w * 0.46, 1.0
         else:
             grow = 1.0
-            if k < BLOOM_HIT:  # wrap in tight around her
-                R = self.img_w * (0.46 - 0.2 * self.ease(k / BLOOM_HIT))
-                alpha = 1.0
-            else:  # fling outward and fade
-                u = (k - BLOOM_HIT) / (1 - BLOOM_HIT)
-                R = self.img_w * (0.26 + 0.5 * u)
-                alpha = max(0.0, 1 - u * 1.6)
+            u = self.ease(k / 0.45)  # spread outward and fade as the scanner starts
+            R = self.img_w * (0.46 + 0.25 * u)
+            alpha = 1 - u
         if grow <= 0 or alpha <= 0:
             return
         cols = [(PINK, CYAN), (CYAN, QColor("#c9b6ff")), (QColor("#ffb3ec"), QColor("#ffffff"))]
@@ -2190,10 +2219,12 @@ class Companion(QWidget):
     def paint_magic_body(self, p, phase, k, pix):
         """Her body glows white while she transforms, then the light peels off
         to reveal LV.999."""
-        if phase == "magic" or k < BLOOM_HIT:
+        if phase == "bloom":
+            return self.paint_scan_body(p, k, pix)
+        if phase == "magic":
             art, ox, oy = pix, 0, 0
-            white = 0.85 * self.ease((k - 0.35) / 0.6) if phase == "magic" else 0.85 + 0.15 * (k / BLOOM_HIT)
-            pulse = 1.0 + (0.04 * math.sin(self.t * 18) * (k / BLOOM_HIT) if phase == "bloom" else 0)
+            white = 0.35 * self.ease((k - 0.35) / 0.6)
+            pulse = 1.0
         else:
             art, ox, oy = self.form_sprite(pix)
             white = 1 - self.ease((k - BLOOM_HIT) / (1 - BLOOM_HIT) * 1.3)
@@ -2211,12 +2242,77 @@ class Companion(QWidget):
             p.drawPixmap(QPointF(ox, oy), self.get_tint(art, QColor(255, 236, 250)))
         p.restore()
 
+    def paint_scan_body(self, p, k, pix):
+        """A white scanner sweeps up from her feet: LV.999 below the line, the
+        chibi above it, and a bright shimmering band where it's changing."""
+        old = pix
+        new, nx, ny = self.form_sprite(pix)
+        ly = self.scan_y(k)
+        band = self.img_h * 0.07
+        big = 4 * self.img_h
+        tint = 0.35 * (1 - self.ease((k - SCAN_END) / (1 - SCAN_END)))
+        white = QColor(255, 236, 250)
+
+        def clip(y0, y1):
+            p.setClipRect(QRectF(-big, y0, 2 * big, y1 - y0))
+
+        p.save()  # above the line: still the chibi, glowing
+        clip(-big, ly)
+        p.drawPixmap(QPointF(0, 0), old)
+        p.setOpacity(0.35)
+        p.drawPixmap(QPointF(0, 0), self.get_tint(old, white))
+        p.restore()
+
+        p.save()  # below the line: LV.999
+        clip(ly, big)
+        p.drawPixmap(QPointF(nx, ny), new)
+        if tint > 0:
+            p.setOpacity(tint)
+            p.drawPixmap(QPointF(nx, ny), self.get_tint(new, white))
+        p.restore()
+
+        if k < SCAN_END:
+            # the changing strip: white-hot at the line, cooling below, with
+            # slices of her new look jittering sideways like it's being written
+            wnew = self.get_tint(new, white)
+            for i in range(5):
+                y0 = ly + band * i / 5
+                p.save()
+                clip(y0, y0 + band / 5 + 0.5)
+                p.setOpacity(1 - i / 5)
+                jx = random.uniform(-4, 4) * (1 - i / 5)
+                p.drawPixmap(QPointF(nx + jx, ny), wnew)
+                p.restore()
+            p.save()  # a sliver of the old look smearing just above the line
+            clip(ly - band * 0.4, ly)
+            p.setOpacity(0.8)
+            p.drawPixmap(QPointF(random.uniform(-5, 5), 0), self.get_tint(old, white))
+            p.restore()
+            # the scanner line itself
+            cx = self.img_w / 2
+            hw = self.img_w * 0.62
+            g = QLinearGradient(0, ly - 7, 0, ly + 7)
+            g.setColorAt(0, QColor(255, 140, 220, 0))
+            g.setColorAt(0.5, QColor(255, 255, 255, 200))
+            g.setColorAt(1, QColor(94, 242, 255, 0))
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawRect(QRectF(cx - hw, ly - 7, hw * 2, 14))
+            hg = QLinearGradient(cx - hw, 0, cx + hw, 0)
+            hg.setColorAt(0, QColor(255, 255, 255, 0))
+            hg.setColorAt(0.5, QColor(255, 255, 255, 255))
+            hg.setColorAt(1, QColor(255, 255, 255, 0))
+            p.setBrush(hg)
+            p.drawRect(QRectF(cx - hw, ly - 1, hw * 2, 2))
+            p.restore()
+
     def paint_bloom_flash(self, p, x, y, k):
         """The burst of light when LV.999 appears."""
-        a = max(0.0, 1 - abs(k - BLOOM_HIT) / 0.2)
+        a = 0.6 * max(0.0, 1 - abs(k - SCAN_END) / 0.12)
         if a <= 0:
             return
-        r = self.img_h * (0.35 + 0.5 * self.ease((k - 0.3) / 0.4))
+        r = self.img_h * (0.4 + 0.3 * self.ease((k - SCAN_END + 0.12) / 0.24))
         p.save()
         g = QRadialGradient(x, y, r)
         g.setColorAt(0, QColor(255, 255, 255, int(255 * a)))
