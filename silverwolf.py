@@ -66,7 +66,7 @@ SW999_COLORS = [CYAN, PINK, QColor("#ffffff"), VIOLET]  # her cyan <-> pink grad
 CUBE_COLORS = [QColor("#ffe066"), PINK, CYAN, QColor("#c9b6ff")]  # the cubes in her cutscene
 FORM_EXTRA = 0.7  # the full-size form is this many PADs taller than the chibi
 # seconds per phase ("active" uses the sw999_seconds setting)
-PHASE_T = {"cart": 0.9, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
+PHASE_T = {"cart": 0.9, "slot": 0.3, "digital": 1.4, "derez": 1.0, "insert": 0.9, "settle": 0.6,
            "visor": 1.1, "active": 7.0, "godoff": 1.0, "unsettle": 0.5, "eject": 0.7, "rerez": 0.9}
 # LV.999 chibi look: her official chat stickers in forms/sw999_chibi/ (01-04, git-ignored).
 #   01 gum + handheld (default)   02 pointing (booped)
@@ -1097,7 +1097,7 @@ class Companion(QWidget):
         ph = self.form_phase
         if ph in ("settle", "lv999", "visor", "active"):
             self.ejected_early = self.say("sw999_eject_early", force=True)
-        if ph in ("cart", "digital"):
+        if ph in ("cart", "slot", "digital"):
             self.form_phase = None
             self.start_glitch(0.2)
         elif ph == "derez":
@@ -1125,7 +1125,7 @@ class Companion(QWidget):
         self.form_phase, self.form_t0 = ph, self.t
         self.form_flag = False
         if ph == "digital":
-            self.play("digital")
+            self.play("transform")  # insert click + boot jingle (cutscene version)
         elif ph == "derez":
             self.play("glitch")
             self.start_glitch(0.15)
@@ -1250,7 +1250,7 @@ class Companion(QWidget):
             self.update_godmode(dt, k)
         if k < 1:
             return
-        nxt = {"cart": "digital", "digital": "derez", "derez": "insert", "insert": "settle",
+        nxt = {"cart": "slot", "slot": "digital", "digital": "derez", "derez": "settle", "insert": "settle",
                "settle": "lv999", "visor": "active", "active": "godoff", "lv999": "unsettle",
                "unsettle": "eject", "eject": "rerez"}.get(ph)
         if ph == "godoff":
@@ -1556,6 +1556,8 @@ class Companion(QWidget):
             amount = self.form_amount()
             if amount > 0:
                 self.paint_light_wings(p, amount, lift)
+            if phase == "derez" and fk >= 0.5:  # crystals burst as she re-forms (cutscene version)
+                self.paint_crystal_burst(p, fk * 2 - 1)
             if phase == "insert" and fk >= INSERT_HIT:  # crystals burst as the cartridge locks in
                 self.paint_crystal_burst(p, (fk - INSERT_HIT) / (1 - INSERT_HIT))
 
@@ -1586,7 +1588,7 @@ class Companion(QWidget):
                 self.draw_pix(p, pix, 0, 0, glitching)
 
             # in front of her
-            if not art and (phase in ("insert", "digital") or (phase == "derez" and fk < 0.5)):
+            if phase in ("slot", "digital") or (phase == "derez" and fk < 0.5):
                 self.paint_screen_glow(p, phase, fk)
             if art and not self.chibi_mode() and (phase in ("visor", "active")
                                                   or (phase == "insert" and fk >= INSERT_HIT)):
@@ -1945,7 +1947,9 @@ class Companion(QWidget):
         return self.img_w * 0.7, -PAD * 0.3 + math.sin(self.t * 2.2) * 4
 
     def paint_cartridge(self, p, phase, k):
-        if phase not in ("cart", "digital", "derez", "insert", "eject"):
+        if phase in ("cart", "slot", "digital", "derez"):
+            return self.paint_cartridge_handheld(p, phase, k)
+        if phase not in ("insert", "eject"):
             return
         hx, hy = self.cart_hover_pt()
         gx, gy = self.gauntlet_pt()
@@ -1992,6 +1996,34 @@ class Companion(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(g)
             p.drawEllipse(QPointF(x, y - ch / 2), r, r)
+        p.translate(x, y)
+        p.rotate(ang)
+        self.draw_cart_shape(p, cw, ch)
+        p.restore()
+
+    def paint_cartridge_handheld(self, p, phase, k):
+        """Cutscene version: tossed in, lands on her handheld, clicks into it,
+        then breaks up with her when she de-rezzes."""
+        if phase == "derez" and k >= 0.5:
+            return
+        slot_x, slot_y = self.anchor_pt("slot", (0.5, 0.7))
+        cw, ch = self.cart_size()
+        seated = slot_y + ch * 0.35  # how deep it sits once inserted
+        x, y, ang, clip, alpha = slot_x, seated, 0.0, True, 1.0
+        if phase == "cart":  # tossed in from above, spinning, lands on the slot
+            e = 1 - (1 - k) ** 3
+            x = slot_x + (1 - e) * 0.35 * self.img_w
+            y = (-PAD - ch) + (slot_y - (-PAD - ch)) * e
+            ang = (1 - e) * 540
+            clip = False
+        elif phase == "slot":  # chk
+            y = slot_y + (seated - slot_y) * (k * k)
+        elif phase == "derez":
+            alpha = max(0.0, 1 - k * 2.5)
+        p.save()
+        p.setOpacity(alpha)
+        if clip:  # the part below the slot is inside the handheld
+            p.setClipRect(QRectF(-4 * self.img_w, -4 * self.img_h, 8 * self.img_w, 4 * self.img_h + slot_y))
         p.translate(x, y)
         p.rotate(ang)
         self.draw_cart_shape(p, cw, ch)
